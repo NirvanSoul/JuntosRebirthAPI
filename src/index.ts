@@ -7,7 +7,7 @@ const app = new Hono<{ Bindings: Bindings }>();
 
 app.route("/", healthRoute);
 
-app.on(["POST", "GET"], "/api/auth/*", (c) => {
+app.all("/api/auth/*", (c) => {
   const auth = createAuth(c.env);
   return auth.handler(c.req.raw);
 });
