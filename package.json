@@ -6,16 +6,20 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",
+    "better-auth": "^1.7.2",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.7.4"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250224.0",
+    "dotenv": "^17.4.2",
     "drizzle-kit": "^0.31.10",
     "typescript": "^5.7.3",
     "vitest": "^3.0.7",
