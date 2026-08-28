@@ -9,6 +9,11 @@ export function createAuth(env: Bindings) {
   if (!env.DATABASE_URL) {
     throw new Error("DATABASE_URL is required to initialize auth");
   }
+  if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) {
+    throw new Error(
+      "Google OAuth is misconfigured: GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are required",
+    );
+  }
 
   const db = createDb(env.DATABASE_URL);
   // Cloudflare Workers does not provide NODE_ENV automatically. Deployments

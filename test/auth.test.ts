@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import app from "../src/index";
 import { createAuth } from "../src/lib/auth";
 
@@ -18,6 +18,26 @@ describe("Better Auth Factory", () => {
         DATABASE_URL: "",
       })
     ).toThrow("DATABASE_URL is required to initialize auth");
+  });
+
+  it("fails fast when Google OAuth bindings are missing", () => {
+    expect(() =>
+      createAuth({
+        ...mockEnv,
+        GOOGLE_CLIENT_ID: "",
+      })
+    ).toThrow(
+      "Google OAuth is misconfigured: GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are required"
+    );
+
+    expect(() =>
+      createAuth({
+        ...mockEnv,
+        GOOGLE_CLIENT_SECRET: "",
+      })
+    ).toThrow(
+      "Google OAuth is misconfigured: GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are required"
+    );
   });
 
   it("initializes auth instance with valid bindings and google provider", () => {
@@ -45,6 +65,34 @@ describe("Better Auth Factory", () => {
       "exp://",
       "exp://**",
     ]);
+  });
+
+  it("does not return PROVIDER_NOT_FOUND for Google social sign-in", async () => {
+    const auth = createAuth(mockEnv);
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new Error("blocked test database request"));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const res = await auth.handler(
+        new Request(
+          "https://juntosapi.aora-estudio-o.workers.dev/api/auth/sign-in/social",
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ provider: "google", callbackURL: "juntoss://" }),
+          }
+        )
+      );
+
+      const body = await res.text();
+      expect(res.status).not.toBe(404);
+      expect(body).not.toContain("PROVIDER_NOT_FOUND");
+    } finally {
+      fetchMock.mockRestore();
+      consoleError.mockRestore();
+    }
   });
 });
 
