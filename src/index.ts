@@ -11,7 +11,8 @@ import { createAuth } from "./lib/auth";
 import type { Bindings } from "./types/env";
 import { accountRoute } from "./routes/account";
 
-import { createInvitationAcceptanceRoute, createInvitationsRoute } from "./routes/invitations";
+import { guestMigrationRoute } from "./routes/guest-migration";
+import { createInvitationAcceptanceRoute, createInvitationPreviewRoute, createInvitationsRoute } from "./routes/invitations";
 import { createMembersRoute } from "./routes/members";
 const app = new Hono<{ Bindings: Bindings }>();
 
@@ -21,8 +22,11 @@ app.use("/v1/spaces", requireAuth);
 app.use("/v1/spaces/*", requireAuth);
 app.use("/v1/bootstrap", requireAuth);
 app.use("/v1/me", requireAuth);
+app.use("/v1/sync/*", requireAuth);
 app.use("/v1/me/*", requireAuth);
 app.route("/v1", accountRoute);
+app.route("/v1/sync", guestMigrationRoute);
+app.route("/v1/invitations", createInvitationPreviewRoute());
 app.route("/v1/spaces", spacesRoute);
 app.route("/v1/spaces/:spaceId/categories", categoriesRoute);
 app.use("/v1/invitations/*", requireAuth);

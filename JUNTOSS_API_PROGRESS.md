@@ -8,6 +8,7 @@ Este documento mantiene el estado de ejecución del plan maestro compartido el 2
 - [x] Fase A: bootstrap de cuenta. La migración se aplicó y se verificó en Neon el 29-08-2026.
 - [x] Fase B: `/v1/me` y perfil. Verificado mediante typecheck y pruebas de contrato.
 - [x] Fase C: auditoría de paridad del ledger remoto — ver `FASE_C_AUDIT.md`.
+- [ ] Fase F: migración guest → cuenta — en curso; contrato local identificado en `Juntos Rebirth/src/features/sync/types.ts`.
 - [ ] Fases D–L: fuera de alcance hasta cerrar y revisar A–C.
 
 ## Decisiones registradas

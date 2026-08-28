@@ -1,8 +1,8 @@
 import { and, eq, gt, sql } from "drizzle-orm";
 import type { Database } from "../db/client";
-import { spaceInvitations, spaceMembers, user } from "../db/schema";
+import { spaceInvitations, spaceMembers, spaces, user, userProfiles } from "../db/schema";
 
-export type Invitation = { id: string; email: string; role: "admin" | "member"; status: "pending" | "accepted" | "revoked" | "expired"; expiresAt: Date; createdAt: Date };
+export type Invitation = { id: string; email: string; role: "admin" | "member"; status: "pending" | "accepted" | "revoked" | "expired"; expiresAt: Date; createdAt: Date; spaceId?: string; spaceName?: string; inviterDisplayName?: string | null };
 
 export function mayManageMembers(role: "owner" | "admin" | "member") { return role === "owner" || role === "admin"; }
 
@@ -37,14 +37,41 @@ export async function acceptInvitation(db: Database, userId: string, token: stri
   return result.rows[0]?.space_id as string | undefined;
 }
 
+/** Accepts an invitation shown inside the authenticated app after bootstrap linked it. */
+export async function acceptLinkedInvitation(db: Database, userId: string, invitationId: string) {
+  const result = await db.execute(sql`
+    WITH accepted AS (
+      UPDATE space_invitations SET status='accepted', accepted_at=now(), updated_at=now()
+      WHERE id=${invitationId} AND invitee_user_id=${userId} AND status='pending' AND expires_at > now()
+      RETURNING space_id, role
+    ), membership AS (
+      INSERT INTO space_members (space_id, user_id, role, status, joined_at, created_at, updated_at)
+      SELECT space_id, ${userId}, role, 'active', now(), now(), now() FROM accepted
+      ON CONFLICT (space_id, user_id) DO UPDATE SET role=EXCLUDED.role, status='active', left_at=NULL, updated_at=now()
+      RETURNING space_id
+    ) SELECT space_id FROM membership
+  `);
+  return result.rows[0]?.space_id as string | undefined;
+}
+
+export async function previewInvitation(db: Database, token: string) {
+  const tokenHash = await hashToken(token);
+  const [row] = await db.select({ status: spaceInvitations.status, expiresAt: spaceInvitations.expiresAt, spaceName: spaces.name, inviterDisplayName: userProfiles.displayName, invitedEmail: spaceInvitations.invitedEmail }).from(spaceInvitations).innerJoin(spaces, eq(spaceInvitations.spaceId, spaces.id)).leftJoin(userProfiles, eq(spaceInvitations.invitedBy, userProfiles.userId)).where(eq(spaceInvitations.tokenHash, tokenHash));
+  if (!row) return { status: "not_found" as const };
+  if (row.status !== "pending") return { status: row.status };
+  if (row.expiresAt <= new Date()) return { status: "expired" as const };
+  const [name, domain] = row.invitedEmail.split("@");
+  return { status: "pending" as const, spaceName: row.spaceName, inviterDisplayName: row.inviterDisplayName ?? "Alguien", invitedEmailMasked: `${name?.slice(0, 2) ?? ""}***@${domain ?? ""}` };
+}
+
 /** Associates pending invitations with a newly authenticated account. It does not grant access. */
 export async function claimEmailInvitations(db: Database, userId: string, email: string) {
   await db.update(spaceInvitations).set({ inviteeUserId: userId, updatedAt: new Date() }).where(and(eq(spaceInvitations.invitedEmail, email.trim().toLowerCase()), eq(spaceInvitations.status, "pending")));
 }
 
 export async function listIncomingInvitations(db: Database, userId: string, email: string): Promise<Invitation[]> {
-  const rows = await db.select({ id: spaceInvitations.id, invitedEmail: spaceInvitations.invitedEmail, role: spaceInvitations.role, status: spaceInvitations.status, expiresAt: spaceInvitations.expiresAt, createdAt: spaceInvitations.createdAt }).from(spaceInvitations).where(and(eq(spaceInvitations.status, "pending"), sql`(${spaceInvitations.inviteeUserId} = ${userId} OR ${spaceInvitations.invitedEmail} = ${email.trim().toLowerCase()})`));
-  return rows.map(serialize);
+  const rows = await db.select({ id: spaceInvitations.id, invitedEmail: spaceInvitations.invitedEmail, role: spaceInvitations.role, status: spaceInvitations.status, expiresAt: spaceInvitations.expiresAt, createdAt: spaceInvitations.createdAt, spaceId: spaces.id, spaceName: spaces.name, inviterDisplayName: userProfiles.displayName }).from(spaceInvitations).innerJoin(spaces, eq(spaceInvitations.spaceId, spaces.id)).leftJoin(userProfiles, eq(spaceInvitations.invitedBy, userProfiles.userId)).where(and(eq(spaceInvitations.status, "pending"), sql`(${spaceInvitations.inviteeUserId} = ${userId} OR ${spaceInvitations.invitedEmail} = ${email.trim().toLowerCase()})`));
+  return rows.map((row) => ({ ...serialize(row), spaceId: row.spaceId, spaceName: row.spaceName, inviterDisplayName: row.inviterDisplayName }));
 }
 
 function serialize(row: { id: string; invitedEmail: string; role: "owner" | "admin" | "member"; status: "pending" | "accepted" | "revoked" | "expired"; expiresAt: Date; createdAt: Date }): Invitation {

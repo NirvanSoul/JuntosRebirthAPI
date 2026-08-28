@@ -121,6 +121,12 @@ export const spaceInvitationStatusEnum = pgEnum("space_invitation_status", [
   "expired",
 ]);
 
+export const guestMigrationStatusEnum = pgEnum("guest_migration_status", [
+  "processing",
+  "completed",
+  "failed",
+]);
+
 export const moneyAccountKindEnum = pgEnum("money_account_kind", [
   "cash",
   "bank",
@@ -235,6 +241,34 @@ export const spaceInvitations = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().$onUpdate(() => new Date()).notNull(),
   },
   (table) => [index("space_invitations_space_status_idx").on(table.spaceId, table.status)],
+);
+
+export const guestMigrationBatches = pgTable(
+  "guest_migration_batches",
+  {
+    id: uuid("id").primaryKey(),
+    userId: text("user_id").notNull().references(() => user.id, { onDelete: "cascade" }),
+    installationId: text("installation_id").notNull(),
+    batchId: text("batch_id").notNull(),
+    status: guestMigrationStatusEnum("status").notNull(),
+    payloadHash: text("payload_hash").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (table) => [uniqueIndex("guest_migration_batches_user_installation_batch_unique").on(table.userId, table.installationId, table.batchId)],
+);
+
+export const guestEntityLinks = pgTable(
+  "guest_entity_links",
+  {
+    userId: text("user_id").notNull(),
+    installationId: text("installation_id").notNull(),
+    entityType: text("entity_type").notNull(),
+    localId: text("local_id").notNull(),
+    remoteId: uuid("remote_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex("guest_entity_links_pk").on(table.userId, table.installationId, table.entityType, table.localId), index("guest_entity_links_remote_idx").on(table.remoteId)],
 );
 
 export const categories = pgTable(

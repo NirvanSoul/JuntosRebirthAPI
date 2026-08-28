@@ -64,6 +64,13 @@
       "when": 1788116400000,
       "tag": "0008_space_invitations",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1788202800000,
+      "tag": "0009_guest_migration",
+      "breakpoints": true
     }
   ]
 }
