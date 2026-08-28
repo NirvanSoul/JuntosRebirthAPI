@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
+import { getTableConfig } from "drizzle-orm/pg-core";
 import app from "../src/index";
 import { createAuth } from "../src/lib/auth";
+import { account } from "../src/db/schema";
 
 const mockEnv = {
   DATABASE_URL: "postgresql://user:pass@ep-test.neon.tech/neondb",
@@ -11,6 +13,21 @@ const mockEnv = {
 };
 
 describe("Better Auth Factory", () => {
+  it("keeps the Better Auth account identity schema current", () => {
+    expect(account.issuer).toBeDefined();
+
+    const identityIndex = getTableConfig(account).indexes.find(
+      (index) => index.config.name === "account_issuer_accountId_uidx",
+    );
+
+    expect(identityIndex?.config.unique).toBe(true);
+    expect(
+      identityIndex?.config.columns.map(
+        (column) => (column as { name?: string }).name,
+      ),
+    ).toEqual(["issuer", "account_id"]);
+  });
+
   it("throws error when DATABASE_URL is missing", () => {
     expect(() =>
       createAuth({
