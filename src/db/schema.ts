@@ -236,7 +236,7 @@ export const categoryBudgets = pgTable(
       .notNull()
       .references(() => categories.id, { onDelete: "cascade" }),
     currency: varchar("currency", { length: 3 }).notNull(),
-    budgetAmountMinor: bigint("budget_amount_minor", { mode: "number" })
+    budgetAmountMinor: bigint("budget_amount_minor", { mode: "bigint" })
       .notNull(),
     createdBy: text("created_by").references(() => user.id, {
       onDelete: "set null",
@@ -297,8 +297,8 @@ export const moneyAccountBalances = pgTable(
       .notNull()
       .references(() => moneyAccounts.id, { onDelete: "cascade" }),
     currency: varchar("currency", { length: 3 }).notNull(),
-    openingBalanceMinor: bigint("opening_balance_minor", { mode: "number" })
-      .default(0)
+    openingBalanceMinor: bigint("opening_balance_minor", { mode: "bigint" })
+      .default(0n)
       .notNull(),
     displayOrder: integer("display_order").default(0).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -338,7 +338,7 @@ export const recurringTransactionSeries = pgTable(
       onDelete: "set null",
     }),
     type: transactionTypeEnum("type").notNull(),
-    amountMinor: bigint("amount_minor", { mode: "number" }).notNull(),
+    amountMinor: bigint("amount_minor", { mode: "bigint" }).notNull(),
     currency: varchar("currency", { length: 3 }).notNull(),
     title: text("title").notNull(),
     frequency: recurringTransactionFrequencyEnum("frequency").notNull(),
@@ -390,7 +390,7 @@ export const transactions = pgTable(
       onDelete: "set null",
     }),
     type: transactionTypeEnum("type").notNull(),
-    amountMinor: bigint("amount_minor", { mode: "number" }).notNull(),
+    amountMinor: bigint("amount_minor", { mode: "bigint" }).notNull(),
     currency: varchar("currency", { length: 3 }).notNull(),
     title: text("title").notNull(),
     occurredOn: date("occurred_on").notNull(),
@@ -502,7 +502,7 @@ export const transactionReferenceRates = pgTable(
     rateSource: text("rate_source").notNull(),
     referenceAsset: varchar("reference_asset", { length: 8 }).notNull(),
     rate: numeric("rate", { precision: 24, scale: 10 }).notNull(),
-    convertedAmountMinor: bigint("converted_amount_minor", { mode: "number" })
+    convertedAmountMinor: bigint("converted_amount_minor", { mode: "bigint" })
       .notNull(),
     rateSnapshotId: uuid("rate_snapshot_id").references(
       () => exchangeRateSnapshots.id,
