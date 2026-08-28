@@ -36,6 +36,13 @@
       "when": 1787913995426,
       "tag": "0004_transactions_rates",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1787915000000,
+      "tag": "0005_space_timezone_recurrence_idempotency",
+      "breakpoints": true
     }
   ]
 }

@@ -154,6 +154,7 @@ export const spaces = pgTable(
     name: text("name").notNull(),
     type: spaceTypeEnum("type").default("personal").notNull(),
     currency: text("currency").default("EUR").notNull(),
+    timezone: varchar("timezone", { length: 64 }).default("UTC").notNull(),
     createdBy: text("created_by").references(() => user.id, {
       onDelete: "set null",
     }),
@@ -422,7 +423,7 @@ export const transactions = pgTable(
     uniqueIndex("transactions_series_occurred_on_idx").on(
       table.recurrenceSeriesId,
       table.occurredOn,
-    ),
+    ).where(sql`${table.recurrenceSeriesId} IS NOT NULL`),
   ],
 );
 

@@ -1,5 +1,6 @@
 import { Hono, type Context } from "hono";
 import { normalizeCurrency } from "../lib/currency";
+import { normalizeTimeZone } from "../lib/timezone";
 import {
   createSpaceWithOwner,
   createSpacesService,
@@ -92,20 +93,22 @@ async function parseCreateSpaceInput(
 
   if (!body || typeof body !== "object" || Array.isArray(body)) return null;
 
-  const { name, type, currency } = body as Record<string, unknown>;
+  const { name, type, currency, timezone } = body as Record<string, unknown>;
   const normalizedName = typeof name === "string" ? name.trim() : "";
   const normalizedCurrency = normalizeCurrency(currency);
+  const normalizedTimezone = normalizeTimeZone(timezone);
 
   if (
     normalizedName.length === 0 ||
     normalizedName.length > 80 ||
     (type !== "personal" && type !== "couple" && type !== "other") ||
-    !normalizedCurrency
+    !normalizedCurrency ||
+    !normalizedTimezone
   ) {
     return null;
   }
 
-  return { name: normalizedName, type, currency: normalizedCurrency };
+  return { name: normalizedName, type, currency: normalizedCurrency, timezone: normalizedTimezone };
 }
 
 function internalError(c: Context<SpacesEnvironment>) {

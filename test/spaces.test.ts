@@ -25,6 +25,7 @@ const space: SpaceSummary = {
   name: "Personal",
   type: "personal",
   currency: "EUR",
+  timezone: "Europe/Madrid",
   role: "owner",
   activatedAt: new Date("2026-08-28T10:00:00.000Z"),
   createdAt: new Date("2026-08-28T10:00:00.000Z"),
@@ -75,7 +76,7 @@ describe("Spaces routes", () => {
   it("POST /v1/spaces returns 401 without a session", async () => {
     const response = await app.request("/v1/spaces", {
       method: "POST",
-      body: JSON.stringify({ name: "Personal", type: "personal", currency: "EUR" }),
+      body: JSON.stringify({ name: "Personal", type: "personal", currency: "EUR", timezone: "Europe/Madrid" }),
     });
 
     expect(response.status).toBe(401);
@@ -114,7 +115,7 @@ describe("Spaces routes", () => {
       "/v1/spaces",
       {
         method: "POST",
-        body: JSON.stringify({ name: "  Mi espacio  ", type: "personal", currency: "eur" }),
+        body: JSON.stringify({ name: "  Mi espacio  ", type: "personal", currency: "eur", timezone: "Europe/Madrid" }),
       },
       bindings,
     );
@@ -125,6 +126,7 @@ describe("Spaces routes", () => {
       name: "Mi espacio",
       type: "personal",
       currency: "EUR",
+      timezone: "Europe/Madrid",
     });
     await expect(response.json()).resolves.toMatchObject({
       data: { space: { id: "space-2", name: "Mi espacio", role: "owner" } },
@@ -149,6 +151,15 @@ describe("Spaces routes", () => {
         ],
       },
     });
+  });
+});
+
+describe("Space timezones", () => {
+  it.each(["GMT+2", "not/a-zone", ""])('rejects invalid IANA timezone %j', async (timezone) => {
+    const response = await createTestApp({ userId: "user-1" }).request("/v1/spaces", {
+      method: "POST", body: JSON.stringify({ name: "Casa", type: "personal", currency: "EUR", timezone }),
+    }, bindings);
+    expect(response.status).toBe(400);
   });
 });
 
@@ -180,6 +191,7 @@ describe("Spaces service", () => {
       name: "Personal",
       type: "personal",
       currency: "EUR",
+      timezone: "Europe/Madrid",
     });
 
     expect(batch).toHaveBeenCalledOnce();

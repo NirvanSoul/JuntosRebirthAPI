@@ -7,6 +7,7 @@ export type SpaceSummary = {
   name: string;
   type: "personal" | "couple" | "other";
   currency: string;
+  timezone: string;
   role: "owner" | "admin" | "member";
   activatedAt: Date | null;
   createdAt: Date;
@@ -16,6 +17,7 @@ export type CreateSpaceInput = {
   name: string;
   type: "personal" | "couple" | "other";
   currency: string;
+  timezone: string;
 };
 
 export async function listActiveSpaces(
@@ -32,6 +34,7 @@ export function buildListActiveSpacesQuery(db: Database, userId: string) {
       name: spaces.name,
       type: spaces.type,
       currency: spaces.currency,
+      timezone: spaces.timezone,
       role: spaceMembers.role,
       activatedAt: spaces.activatedAt,
       createdAt: spaces.createdAt,
@@ -61,6 +64,7 @@ export async function createSpaceWithOwner(
       name: input.name,
       type: input.type,
       currency: input.currency,
+      timezone: input.timezone,
       createdBy: userId,
       activatedAt: now,
       createdAt: now,
@@ -82,6 +86,7 @@ export async function createSpaceWithOwner(
     name: input.name,
     type: input.type,
     currency: input.currency,
+    timezone: input.timezone,
     role: "owner",
     activatedAt: now,
     createdAt: now,

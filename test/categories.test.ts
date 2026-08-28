@@ -47,6 +47,7 @@ function createTestApp(overrides: Record<string, unknown> = {}) {
       budgetAmountMinor: "30000",
     }),
     deleteCategoryBudget: vi.fn().mockResolvedValue(undefined),
+    categoryHasFutureRecurringSeries: vi.fn().mockResolvedValue(false),
     ...overrides,
   };
   const testApp = new Hono<{

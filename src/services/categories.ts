@@ -1,6 +1,6 @@
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, eq, isNull, isNotNull } from "drizzle-orm";
 import { type Database } from "../db/client";
-import { categoryBudgets, categories } from "../db/schema";
+import { categoryBudgets, categories, recurringTransactionSeries } from "../db/schema";
 import { serializeMinorAmount } from "../lib/money";
 
 export type CategoryBudgetResponse = {
@@ -223,4 +223,13 @@ export async function deleteCategoryBudget(
         eq(categoryBudgets.currency, currency),
       ),
     );
+}
+
+export async function categoryHasFutureRecurringSeries(db: Database, spaceId: string, categoryId: string) {
+  const [row] = await db.select({ id: recurringTransactionSeries.id }).from(recurringTransactionSeries).where(and(
+    eq(recurringTransactionSeries.spaceId, spaceId), eq(recurringTransactionSeries.categoryId, categoryId),
+    eq(recurringTransactionSeries.isArchived, false), isNull(recurringTransactionSeries.archivedAt),
+    isNotNull(recurringTransactionSeries.nextOccurrenceOn),
+  )).limit(1);
+  return Boolean(row);
 }

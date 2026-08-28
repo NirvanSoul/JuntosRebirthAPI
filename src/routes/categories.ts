@@ -10,6 +10,7 @@ import {
 import {
   createCategory,
   deleteCategoryBudget,
+  categoryHasFutureRecurringSeries,
   findCategoryInSpace,
   listCategories,
   updateCategory,
@@ -31,6 +32,7 @@ type CategoriesDependencies = {
   updateCategory: typeof updateCategory;
   upsertCategoryBudget: typeof upsertCategoryBudget;
   deleteCategoryBudget: typeof deleteCategoryBudget;
+  categoryHasFutureRecurringSeries: typeof categoryHasFutureRecurringSeries;
 };
 
 const defaultDependencies: CategoriesDependencies = {
@@ -41,6 +43,7 @@ const defaultDependencies: CategoriesDependencies = {
   updateCategory,
   upsertCategoryBudget,
   deleteCategoryBudget,
+  categoryHasFutureRecurringSeries,
 };
 
 export function createCategoriesRoute(
@@ -88,6 +91,9 @@ export function createCategoriesRoute(
     if (!input) return errorResponse(c, 400, "INVALID_REQUEST", "Invalid request.");
 
     try {
+      if (input.isArchived === true && await dependencies.categoryHasFutureRecurringSeries(dependencies.createDb(c.env.DATABASE_URL), c.req.param("spaceId")!, c.req.param("categoryId")!)) {
+        return errorResponse(c, 409, "CATEGORY_IN_USE", "Category is in use.");
+      }
       const category = await dependencies.updateCategory(
         dependencies.createDb(c.env.DATABASE_URL),
         {
