@@ -22,6 +22,20 @@
       "when": 1787910574380,
       "tag": "0002_categories_budgets",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1787913449543,
+      "tag": "0003_money_accounts_balances",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1787913995426,
+      "tag": "0004_transactions_rates",
+      "breakpoints": true
     }
   ]
 }

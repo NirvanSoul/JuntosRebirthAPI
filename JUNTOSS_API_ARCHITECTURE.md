@@ -667,6 +667,12 @@ currency = "VES"
 
 Preferiblemente código ISO 4217 cuando aplique.
 
+Al crear una `money_account`, la API debe crear en la misma operación al menos
+un `money_account_balances` con `currency` igual a la `primary_currency` de la
+cuenta. Las monedas adicionales se añaden posteriormente para cuentas
+multidivisa. Esta regla se garantiza en la API, no mediante una constraint de
+PostgreSQL entre filas.
+
 ---
 
 # 17. IDs
