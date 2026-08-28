@@ -699,6 +699,11 @@ archived_at
 
 Utilizar timestamps con zona horaria en PostgreSQL cuando corresponda.
 
+`updated_at` se actualiza desde la API en cada `UPDATE`. En Drizzle, todas las
+columnas `updatedAt` de las tablas propias deben declarar `$onUpdate(() => new
+Date())`; no se usan triggers de PostgreSQL. Las actualizaciones ejecutadas con
+SQL directo también deben asignar explícitamente `updated_at = now()`.
+
 No guardar fechas importantes como strings arbitrarios.
 
 Para fechas financieras que representan un día y no una hora:
