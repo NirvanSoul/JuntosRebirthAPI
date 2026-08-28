@@ -29,6 +29,22 @@ describe("Better Auth Factory", () => {
     expect(auth.options.socialProviders?.google?.clientId).toBe(
       mockEnv.GOOGLE_CLIENT_ID
     );
+    expect(auth.options.plugins).toHaveLength(1);
+    expect(auth.options.trustedOrigins).toEqual(["juntoss://", "juntoss://*"]);
+  });
+
+  it("allows Expo development origins only for development Workers", () => {
+    const auth = createAuth({
+      ...mockEnv,
+      ENVIRONMENT: "development",
+    });
+
+    expect(auth.options.trustedOrigins).toEqual([
+      "juntoss://",
+      "juntoss://*",
+      "exp://",
+      "exp://**",
+    ]);
   });
 });
 
