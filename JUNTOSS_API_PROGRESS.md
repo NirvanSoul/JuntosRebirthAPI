@@ -18,4 +18,4 @@ Este documento mantiene el estado de ejecución del plan maestro compartido el 2
 
 ## Próximo hito
 
-Desplegar el Worker, probar el bootstrap contra una sesión Google real y decidir el contrato de `note` y de recurrencias custom antes de iniciar Fase D o F.
+El Worker con bootstrap/perfil está desplegado en producción. Queda probar el bootstrap contra una sesión Google real y decidir el contrato de `note` y de recurrencias custom antes de iniciar Fase D o F.
