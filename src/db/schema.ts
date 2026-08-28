@@ -145,6 +145,9 @@ export const userProfiles = pgTable("user_profiles", {
   avatarUpdatedAt: timestamp("avatar_updated_at", { withTimezone: true }),
   locale: text("locale").default("es").notNull(),
   defaultCurrency: text("default_currency").default("EUR").notNull(),
+  personalSpaceId: uuid("personal_space_id").references(() => spaces.id, {
+    onDelete: "set null",
+  }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .defaultNow()
     .notNull(),

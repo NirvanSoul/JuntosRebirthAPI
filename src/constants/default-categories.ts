@@ -1,0 +1,21 @@
+/** Canonical initial categories. The API, not the client, owns this template. */
+export const defaultCategories = [
+  { key: "salary", name: "Salario", icon: "money", colorToken: "green" },
+  { key: "groceries", name: "Supermercado", icon: "shopping-cart", colorToken: "orange" },
+  { key: "housing", name: "Vivienda", icon: "house", colorToken: "slate" },
+  { key: "transport", name: "Transporte", icon: "car", colorToken: "blue" },
+  { key: "utilities", name: "Servicios", icon: "lightning", colorToken: "yellow" },
+  { key: "restaurants", name: "Restaurantes", icon: "fork-knife", colorToken: "coral" },
+  { key: "shopping", name: "Compras", icon: "shopping-bag", colorToken: "pink" },
+  { key: "health", name: "Salud", icon: "heartbeat", colorToken: "red" },
+  { key: "savings", name: "Salidas", icon: "wine", colorToken: "violet" },
+  { key: "freelance", name: "Freelance", icon: "briefcase", colorToken: "teal" },
+  { key: "family", name: "Familia", icon: "users-three", colorToken: "plum" },
+  { key: "leisure", name: "Ocio", icon: "game-controller", colorToken: "emerald" },
+  { key: "education", name: "Educación", icon: "graduation-cap", colorToken: "indigo" },
+  { key: "subscriptions", name: "Suscripciones", icon: "credit-card", colorToken: "rose" },
+  { key: "travel", name: "Viajes", icon: "airplane-tilt", colorToken: "cyan" },
+  { key: "pets", name: "Mascotas", icon: "paw-print", colorToken: "amber" },
+  { key: "debts", name: "Deudas", icon: "receipt", colorToken: "brown" },
+  { key: "other", name: "Otros", icon: "dots-three-circle", colorToken: "steel" },
+] as const;
