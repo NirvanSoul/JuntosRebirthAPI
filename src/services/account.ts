@@ -2,6 +2,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { defaultCategories } from "../constants/default-categories";
 import type { Database } from "../db/client";
 import { spaceMembers, spaces, user, userProfiles } from "../db/schema";
+import { claimEmailInvitations } from "./invitations";
 
 export type CurrentUser = {
   id: string;
@@ -48,6 +49,8 @@ export async function bootstrapAccount(
     .values({ userId: currentUser.id, displayName })
     .onConflictDoNothing()
     .returning({ userId: userProfiles.userId });
+
+  await claimEmailInvitations(db, currentUser.id, currentUser.email);
 
   const spaceId = crypto.randomUUID();
   const categoryValues = sql.join(

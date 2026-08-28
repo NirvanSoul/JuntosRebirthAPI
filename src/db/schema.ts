@@ -114,6 +114,13 @@ export const spaceMemberStatusEnum = pgEnum("space_member_status", [
   "left",
 ]);
 
+export const spaceInvitationStatusEnum = pgEnum("space_invitation_status", [
+  "pending",
+  "accepted",
+  "revoked",
+  "expired",
+]);
+
 export const moneyAccountKindEnum = pgEnum("money_account_kind", [
   "cash",
   "bank",
@@ -209,6 +216,25 @@ export const spaceMembers = pgTable(
     uniqueIndex("space_members_space_user_idx").on(table.spaceId, table.userId),
     index("space_members_userId_idx").on(table.userId),
   ],
+);
+
+export const spaceInvitations = pgTable(
+  "space_invitations",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    spaceId: uuid("space_id").notNull().references(() => spaces.id, { onDelete: "cascade" }),
+    invitedBy: text("invited_by").references(() => user.id, { onDelete: "set null" }),
+    invitedEmail: text("invited_email").notNull(),
+    inviteeUserId: text("invitee_user_id").references(() => user.id, { onDelete: "set null" }),
+    role: spaceMemberRoleEnum("role").default("member").notNull(),
+    tokenHash: text("token_hash").notNull().unique(),
+    status: spaceInvitationStatusEnum("status").default("pending").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().$onUpdate(() => new Date()).notNull(),
+  },
+  (table) => [index("space_invitations_space_status_idx").on(table.spaceId, table.status)],
 );
 
 export const categories = pgTable(

@@ -11,6 +11,8 @@ import { createAuth } from "./lib/auth";
 import type { Bindings } from "./types/env";
 import { accountRoute } from "./routes/account";
 
+import { createInvitationAcceptanceRoute, createInvitationsRoute } from "./routes/invitations";
+import { createMembersRoute } from "./routes/members";
 const app = new Hono<{ Bindings: Bindings }>();
 
 app.route("/", healthRoute);
@@ -23,6 +25,10 @@ app.use("/v1/me/*", requireAuth);
 app.route("/v1", accountRoute);
 app.route("/v1/spaces", spacesRoute);
 app.route("/v1/spaces/:spaceId/categories", categoriesRoute);
+app.use("/v1/invitations/*", requireAuth);
+app.route("/v1/invitations", createInvitationAcceptanceRoute());
+app.route("/v1/spaces/:spaceId/invitations", createInvitationsRoute());
+app.route("/v1/spaces/:spaceId/members", createMembersRoute());
 app.route("/v1/spaces/:spaceId/money-accounts", moneyAccountsRoute);
 app.route("/v1/spaces/:spaceId/transactions", transactionsRoute);
 app.route("/v1/spaces/:spaceId/recurring-transactions", recurringTransactionsRoute);
