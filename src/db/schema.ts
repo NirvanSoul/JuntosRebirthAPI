@@ -1,12 +1,15 @@
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 import {
   pgTable,
   text,
   timestamp,
   boolean,
+  check,
   index,
   uniqueIndex,
   uuid,
+  bigint,
+  varchar,
   pgEnum,
 } from "drizzle-orm/pg-core";
 
@@ -173,6 +176,67 @@ export const spaceMembers = pgTable(
   ],
 );
 
+export const categories = pgTable(
+  "categories",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    spaceId: uuid("space_id")
+      .notNull()
+      .references(() => spaces.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    icon: text("icon"),
+    colorToken: text("color_token"),
+    createdBy: text("created_by").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    isDefault: boolean("is_default").default(false).notNull(),
+    templateKey: text("template_key"),
+    isArchived: boolean("is_archived").default(false).notNull(),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull(),
+  },
+  (table) => [index("categories_spaceId_idx").on(table.spaceId)],
+);
+
+export const categoryBudgets = pgTable(
+  "category_budgets",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    categoryId: uuid("category_id")
+      .notNull()
+      .references(() => categories.id, { onDelete: "cascade" }),
+    currency: varchar("currency", { length: 3 }).notNull(),
+    budgetAmountMinor: bigint("budget_amount_minor", { mode: "number" })
+      .notNull(),
+    createdBy: text("created_by").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull(),
+  },
+  (table) => [
+    check(
+      "category_budgets_budget_amount_minor_nonnegative",
+      sql`${table.budgetAmountMinor} >= 0`,
+    ),
+    uniqueIndex("category_budgets_category_currency_idx").on(
+      table.categoryId,
+      table.currency,
+    ),
+  ],
+);
+
 // Relations
 export const userRelations = relations(user, ({ one, many }) => ({
   sessions: many(session),
@@ -183,6 +247,8 @@ export const userRelations = relations(user, ({ one, many }) => ({
   }),
   memberships: many(spaceMembers),
   createdSpaces: many(spaces),
+  createdCategories: many(categories),
+  createdCategoryBudgets: many(categoryBudgets),
 }));
 
 export const sessionRelations = relations(session, ({ one }) => ({
@@ -212,6 +278,7 @@ export const spacesRelations = relations(spaces, ({ one, many }) => ({
     references: [user.id],
   }),
   members: many(spaceMembers),
+  categories: many(categories),
 }));
 
 export const spaceMembersRelations = relations(spaceMembers, ({ one }) => ({
@@ -221,6 +288,29 @@ export const spaceMembersRelations = relations(spaceMembers, ({ one }) => ({
   }),
   user: one(user, {
     fields: [spaceMembers.userId],
+    references: [user.id],
+  }),
+}));
+
+export const categoriesRelations = relations(categories, ({ one, many }) => ({
+  space: one(spaces, {
+    fields: [categories.spaceId],
+    references: [spaces.id],
+  }),
+  creator: one(user, {
+    fields: [categories.createdBy],
+    references: [user.id],
+  }),
+  budgets: many(categoryBudgets),
+}));
+
+export const categoryBudgetsRelations = relations(categoryBudgets, ({ one }) => ({
+  category: one(categories, {
+    fields: [categoryBudgets.categoryId],
+    references: [categories.id],
+  }),
+  creator: one(user, {
+    fields: [categoryBudgets.createdBy],
     references: [user.id],
   }),
 }));
