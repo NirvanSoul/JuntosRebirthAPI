@@ -129,6 +129,41 @@ describe("space bulk sync", () => {
     });
   });
 
+  it("reuses the remote id of seeded category matching templateKey", async () => {
+    const { db, captured } = fakeDatabase({
+      categories: [
+        {
+          id: "seeded-cat-uuid-1111-2222-3333-4444",
+          sourceInstallationId: null,
+          sourceLocalId: null,
+          templateKey: "groceries",
+        },
+      ],
+    });
+
+    await syncSpaceData(
+      db,
+      SPACE,
+      "user-1",
+      payload({
+        categories: [
+          category({
+            id: "local-groceries",
+            remoteId: "different-uuid-from-client",
+            templateKey: "groceries",
+          }),
+        ],
+      }),
+    );
+
+    expect(rowsFor(captured, "categories")[0]?.values).toMatchObject({
+      id: "seeded-cat-uuid-1111-2222-3333-4444",
+      sourceInstallationId: "install-1",
+      sourceLocalId: "local-groceries",
+      templateKey: "groceries",
+    });
+  });
+
   it("mints a new id when the client id is not a uuid", async () => {
     const { db, captured } = fakeDatabase();
 

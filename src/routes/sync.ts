@@ -74,10 +74,10 @@ export function createSpaceSyncRoute(
       );
       return c.json({ data: result });
     } catch (error) {
+      console.error("Space sync failed:", error);
       const reason = error instanceof Error ? error.message : "";
       const code = CLIENT_ERRORS[reason];
       if (!code) {
-        console.error("Space sync failed:", reason);
         return errorResponse(c, "INTERNAL_ERROR");
       }
       return errorResponse(c, code);

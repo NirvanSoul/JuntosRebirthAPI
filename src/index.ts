@@ -40,6 +40,9 @@ app.use("*", (c, next) =>
   cors({
     origin: (origin) => {
       if (/^juntoss:\/\//.test(origin)) return origin;
+      if (/^https:\/\/api\.aoraestudio\.com$/.test(origin)) return origin;
+      if (/^https:\/\/juntosapi\.aora-estudio-o\.workers\.dev$/.test(origin)) return origin;
+      if (c.env?.BETTER_AUTH_URL && origin === c.env.BETTER_AUTH_URL) return origin;
       if (c.env?.ENVIRONMENT === "development" && /^(exp|http):\/\//.test(origin)) {
         return origin;
       }

@@ -74,7 +74,12 @@ describe("Better Auth Factory", () => {
     // El registro debe confirmar el correo antes de dejar entrar, igual que
     // hacía la base anterior (`email_not_confirmed`).
     expect(auth.options.emailAndPassword?.requireEmailVerification).toBe(true);
-    expect(auth.options.trustedOrigins).toEqual(["juntoss://", "juntoss://*"]);
+    expect(auth.options.trustedOrigins).toEqual([
+      mockEnv.BETTER_AUTH_URL,
+      "https://api.aoraestudio.com",
+      "juntoss://",
+      "juntoss://*",
+    ]);
   });
 
   it("allows Expo development origins only for development Workers", () => {
@@ -84,6 +89,8 @@ describe("Better Auth Factory", () => {
     });
 
     expect(auth.options.trustedOrigins).toEqual([
+      mockEnv.BETTER_AUTH_URL,
+      "https://api.aoraestudio.com",
       "juntoss://",
       "juntoss://*",
       "exp://",

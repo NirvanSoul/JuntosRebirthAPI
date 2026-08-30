@@ -48,7 +48,8 @@ export function createRequireActiveSpaceMember(
 
       c.set("activeSpaceMembership", membership);
       await next();
-    } catch {
+    } catch (error) {
+      console.error("requireActiveSpaceMember failed:", error);
       return errorResponse(c, "INTERNAL_ERROR", "Internal error.");
     }
   });

@@ -30,6 +30,7 @@ export type SpaceSyncResult = {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 type Existing = { id: string; sourceInstallationId: string | null; sourceLocalId: string | null };
+type ExistingCategory = Existing & { templateKey?: string | null };
 
 /**
  * Traduce los identificadores locales del dispositivo a los remotos, en el
@@ -61,6 +62,40 @@ function resolveIds(existing: Existing[], rows: Row[], installationId: string) {
       localId,
       linked ?? (remoteId && UUID.test(remoteId) ? remoteId : crypto.randomUUID()),
     );
+  }
+  return resolved;
+}
+
+function resolveCategoryIds(existing: ExistingCategory[], rows: Row[], installationId: string) {
+  const bySource = new Map<string, string>();
+  const byTemplateKey = new Map<string, string>();
+  for (const row of existing) {
+    if (row.sourceInstallationId && row.sourceLocalId) {
+      bySource.set(`${row.sourceInstallationId}:${row.sourceLocalId}`, row.id);
+    }
+    if (row.templateKey) {
+      byTemplateKey.set(row.templateKey, row.id);
+    }
+  }
+
+  const resolved = new Map<string, string>();
+  for (const row of rows) {
+    const localId = text(row.id);
+    if (!localId) throw new Error("INVALID_PAYLOAD");
+
+    const linked = bySource.get(`${installationId}:${localId}`);
+    const templateMatch = typeof row.templateKey === "string" && row.templateKey
+      ? byTemplateKey.get(row.templateKey)
+      : null;
+    const remoteId = typeof row.remoteId === "string" ? row.remoteId : null;
+    const resolvedId =
+      linked ?? templateMatch ?? (remoteId && UUID.test(remoteId) ? remoteId : crypto.randomUUID());
+
+    if (typeof row.templateKey === "string" && row.templateKey && !byTemplateKey.has(row.templateKey)) {
+      byTemplateKey.set(row.templateKey, resolvedId);
+    }
+
+    resolved.set(localId, resolvedId);
   }
   return resolved;
 }
@@ -101,6 +136,7 @@ export async function syncSpaceData(
           id: categories.id,
           sourceInstallationId: categories.sourceInstallationId,
           sourceLocalId: categories.sourceLocalId,
+          templateKey: categories.templateKey,
         })
         .from(categories)
         .where(eq(categories.spaceId, spaceId)),
@@ -130,7 +166,7 @@ export async function syncSpaceData(
         .where(eq(transactions.spaceId, spaceId)),
     ]);
 
-  const categoryIds = resolveIds(existingCategories, payload.categories, installationId);
+  const categoryIds = resolveCategoryIds(existingCategories, payload.categories, installationId);
   const accountIds = resolveIds(existingAccounts, payload.moneyAccounts, installationId);
   const seriesIds = resolveIds(existingSeries, payload.recurringSeries, installationId);
   const transactionIds = resolveIds(existingTransactions, payload.transactions, installationId);
@@ -265,7 +301,7 @@ export async function syncSpaceData(
         db.insert(moneyAccountBalances).values({
           moneyAccountId: id,
           currency: text(balance.currency),
-          openingBalanceMinor: BigInt(integer(balance.openingBalanceMinor)),
+          openingBalanceMinor: BigInt(integer(balance.openingBalanceMinor ?? 0)),
           displayOrder: integer(balance.position ?? balance.displayOrder ?? 0),
         }),
       );

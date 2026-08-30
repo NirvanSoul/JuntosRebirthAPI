@@ -13,8 +13,14 @@
   // GOOGLE_CLIENT_ID no aparece: ya está desplegado como secreto y declararlo
   // también como var lo sobrescribiría. No es información sensible, pero
   // moverlo es una operación aparte que se hace en frío, no en un despliegue.
+  "routes": [
+    {
+      "pattern": "api.aoraestudio.com",
+      "custom_domain": true
+    }
+  ],
   "vars": {
-    "BETTER_AUTH_URL": "https://juntosapi.aora-estudio-o.workers.dev",
+    "BETTER_AUTH_URL": "https://api.aoraestudio.com",
     "RESEND_FROM": "Juntoss <no-reply@aoraestudio.com>",
     "APP_URL": "juntoss://",
     "ENVIRONMENT": "production"

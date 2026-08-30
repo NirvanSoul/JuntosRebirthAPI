@@ -54,10 +54,13 @@ function buildAuth(env: Bindings) {
   // as development through the ENVIRONMENT binding.
   const isDevelopment = env.ENVIRONMENT === "development";
   const trustedOrigins = [
+    ...(env.BETTER_AUTH_URL ? [env.BETTER_AUTH_URL] : []),
+    "https://api.aoraestudio.com",
+    "https://juntosapi.aora-estudio-o.workers.dev",
     "juntoss://",
     "juntoss://*",
     ...(isDevelopment ? ["exp://", "exp://**"] : []),
-  ];
+  ].filter((v, i, a) => a.indexOf(v) === i);
 
   const emailConfig = {
     apiKey: env.RESEND_API_KEY,
