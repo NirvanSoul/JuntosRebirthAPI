@@ -2,14 +2,26 @@
 
 Backend independiente para **Juntoss** construido sobre **Cloudflare Workers**, **Hono** y **TypeScript**.
 
+## Estado
+
+El backend está desplegado en Cloudflare Workers y usa Neon (PostgreSQL), Better
+Auth, Resend y R2. El estado por módulo, contrato de sincronización y trabajo de
+coordinación con el frontend están en [JUNTOSS_API_PROGRESS.md](JUNTOSS_API_PROGRESS.md).
+
+Las únicas funciones de backend diferidas son Apple Sign In y realtime para
+espacios compartidos. No se deben confundir con las pruebas E2E pendientes de la
+app o de un dispositivo físico.
+
 ## Estructura del proyecto
 
 ```text
 juntoss-api/
 ├── src/
 │   ├── index.ts
-│   └── routes/
-│       └── health.ts
+│   ├── db/
+│   ├── middleware/
+│   ├── routes/
+│   └── services/
 ├── test/
 │   └── health.test.ts
 ├── wrangler.jsonc
@@ -55,6 +67,14 @@ juntoss-api/
   ```bash
   npm test
   ```
+
+- **Tests de integración contra PostgreSQL real:**
+  ```bash
+  npm run test:integration
+  ```
+
+  Requiere `DATABASE_URL` en `.dev.vars`; no se ejecuta como parte de la suite
+  unitaria para evitar tocar una base remota accidentalmente.
 
 ## Despliegue en Cloudflare Workers
 

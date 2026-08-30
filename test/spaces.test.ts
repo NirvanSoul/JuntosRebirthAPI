@@ -10,6 +10,7 @@ import {
   type SpaceSummary,
 } from "../src/services/spaces";
 import type { Database } from "../src/db/client";
+import { defaultCategories } from "../src/constants/default-categories";
 import type { Bindings } from "../src/types/env";
 
 const bindings: Bindings = {
@@ -195,7 +196,7 @@ describe("Spaces service", () => {
     });
 
     expect(batch).toHaveBeenCalledOnce();
-    expect(batch.mock.calls[0]?.[0]).toHaveLength(2);
+    expect(batch.mock.calls[0]?.[0]).toHaveLength(3);
     expect(insertedValues[0]).toMatchObject({
       id: created.id,
       createdBy: "user-1",
@@ -207,5 +208,31 @@ describe("Spaces service", () => {
       role: "owner",
       status: "active",
     });
+    // Sin categorías el espacio no admitiría ni un movimiento.
+    const seeded = insertedValues[2] as unknown as Array<Record<string, unknown>>;
+    expect(seeded).toHaveLength(defaultCategories.length);
+    expect(seeded[0]).toMatchObject({
+      spaceId: created.id,
+      isDefault: true,
+      templateKey: defaultCategories[0].key,
+    });
+    expect(created.activatedAt).toEqual(expect.any(Date));
+  });
+
+  it("leaves a couple space inactive until the invitation is accepted", async () => {
+    const db = {
+      insert: vi.fn(() => ({ values: (values: unknown) => ({ values }) })),
+      batch: vi.fn().mockResolvedValue([]),
+    } as unknown as Database;
+
+    const created = await createSpaceWithOwner(db, "user-1", {
+      name: "Juntos",
+      type: "couple",
+      currency: "EUR",
+      timezone: "Europe/Madrid",
+    });
+
+    // El cliente deriva "esperando pareja" de `activatedAt === null`.
+    expect(created.activatedAt).toBeNull();
   });
 });

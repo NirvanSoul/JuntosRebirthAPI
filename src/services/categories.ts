@@ -83,6 +83,29 @@ export function buildCategoryListQuery(db: Database, spaceId: string) {
     .orderBy(asc(categories.name));
 }
 
+/**
+ * Presupuestos de una categoría, sin filtrar por archivado. El PATCH los
+ * necesita para no devolver `budgets: []` y hacer que un cliente que fusione la
+ * respuesta se quede sin presupuestos.
+ */
+export async function findCategoryBudgets(
+  db: Database,
+  categoryId: string,
+): Promise<CategoryBudgetResponse[]> {
+  const rows = await db
+    .select({
+      currency: categoryBudgets.currency,
+      budgetAmountMinor: categoryBudgets.budgetAmountMinor,
+    })
+    .from(categoryBudgets)
+    .where(eq(categoryBudgets.categoryId, categoryId));
+
+  return rows.map((row) => ({
+    currency: row.currency,
+    budgetAmountMinor: serializeMinorAmount(row.budgetAmountMinor),
+  }));
+}
+
 export async function findCategoryInSpace(
   db: Database,
   spaceId: string,

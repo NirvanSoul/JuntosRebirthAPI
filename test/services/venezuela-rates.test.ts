@@ -44,3 +44,27 @@ describe("VenezuelaRateService", () => {
     );
   });
 });
+
+describe("workers fetch binding", () => {
+  it("calls the global fetch with its own `this`, not the service instance", async () => {
+    const original = globalThis.fetch;
+    let receivedThis: unknown = "never called";
+    globalThis.fetch = function (this: unknown) {
+      receivedThis = this;
+      return Promise.resolve(
+        new Response(JSON.stringify({ success: true, usd: 1, eur: 2 }), { status: 200 }),
+      );
+    } as typeof fetch;
+
+    try {
+      // Sin argumento: se ejercita el `fetch` por defecto, que es justo el que
+      // fallaba en producción con "Illegal invocation".
+      await new VenezuelaRateService().getRates();
+    } finally {
+      globalThis.fetch = original;
+    }
+
+    expect(receivedThis).not.toBe("never called");
+    expect(receivedThis === globalThis || receivedThis === undefined).toBe(true);
+  });
+});

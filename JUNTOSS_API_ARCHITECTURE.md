@@ -141,21 +141,24 @@ https://api.juntoss.app
 
 ---
 
-# 5. Primera versión que debe construirse
+# 5. Estado de implementación (30-08-2026)
 
-NO implementar todavía:
+Las fases descritas más abajo son el plan histórico que guió la construcción.
+No deben leerse como trabajo pendiente: infraestructura, PostgreSQL, Better
+Auth con Google y correo, espacios, ledger, invitaciones, sincronización,
+importaciones, consentimientos, push y R2 ya están implementados y verificados.
+El estado operativo y las decisiones de transición con el frontend se mantienen
+en `JUNTOSS_API_PROGRESS.md`.
 
-- PostgreSQL
-- Better Auth
-- Google
-- Apple
-- Resend
-- invitaciones
-- sincronización
-- movimientos
-- categorías
+Quedan fuera del alcance actual:
 
-La primera versión debe comprobar únicamente que la infraestructura funciona.
+- Apple Sign In, porque el frontend aún no muestra esa opción;
+- realtime de espacios compartidos: el cliente usa polling y restauración al
+  reabrir;
+- las integraciones E2E que requieren la app instalada o un dispositivo físico.
+
+El endpoint de salud continúa siendo el mínimo que toda instalación debe poder
+comprobar.
 
 ## Endpoint inicial
 
@@ -927,7 +930,9 @@ GET    /v1/spaces/:spaceId/accounts
 POST   /v1/spaces/:spaceId/accounts
 ```
 
-No implementar estos endpoints todavía salvo cuando llegue su fase.
+Las rutas ya implementadas se registran en `JUNTOSS_API_PROGRESS.md`. Al añadir
+una nueva, respetar el prefijo `/v1`, el sobre de respuesta y la autorización de
+espacio definidos en este documento.
 
 ---
 
@@ -1014,7 +1019,7 @@ Crear una nueva.
 
 # 30. Orden de implementación
 
-## Fase 1 — Infraestructura mínima
+## Fase 1 — Infraestructura mínima — completada
 
 Objetivo:
 
@@ -1030,109 +1035,109 @@ GET /health
 
 Checklist:
 
-- [ ] repositorio `juntoss-api`
-- [ ] TypeScript
-- [ ] Hono
-- [ ] Wrangler
-- [ ] ejecución local
-- [ ] `/health`
-- [ ] deploy Cloudflare
-- [ ] URL pública responde correctamente
+- [x] repositorio `juntoss-api`
+- [x] TypeScript
+- [x] Hono
+- [x] Wrangler
+- [x] ejecución local
+- [x] `/health`
+- [x] deploy Cloudflare
+- [x] URL pública responde correctamente
 
 ---
 
-## Fase 2 — PostgreSQL
+## Fase 2 — PostgreSQL — completada
 
 Después de completar Fase 1:
 
-- [ ] crear proyecto Neon
-- [ ] configurar `DATABASE_URL`
-- [ ] instalar Drizzle
-- [ ] crear conexión PostgreSQL
-- [ ] comprobar conexión desde Worker
-- [ ] definir esquema inicial limpio
-- [ ] primera migración
+- [x] crear proyecto Neon
+- [x] configurar `DATABASE_URL`
+- [x] instalar Drizzle
+- [x] crear conexión PostgreSQL
+- [x] comprobar conexión desde Worker
+- [x] definir esquema inicial limpio
+- [x] primera migración
 
 No implementar autenticación antes de comprobar que la conexión DB funciona correctamente.
 
 ---
 
-## Fase 3 — Better Auth
+## Fase 3 — Better Auth — completada, salvo Apple
 
-- [ ] Better Auth
-- [ ] tablas auth
-- [ ] sesiones
-- [ ] endpoint auth
-- [ ] Google
-- [ ] Apple
-- [ ] `user_profiles`
-- [ ] `/v1/me`
-
----
-
-## Fase 4 — Spaces
-
-- [ ] spaces
-- [ ] space_members
-- [ ] creación de espacio personal
-- [ ] lectura de espacios
-- [ ] autorización por membresía
+- [x] Better Auth
+- [x] tablas auth
+- [x] sesiones
+- [x] endpoint auth
+- [x] Google
+- [ ] Apple — diferido hasta que exista el botón en el cliente
+- [x] `user_profiles`
+- [x] `/v1/me`
 
 ---
 
-## Fase 5 — Core financiero
+## Fase 4 — Spaces — completada
 
-- [ ] categories
-- [ ] category_budgets
-- [ ] money_accounts
-- [ ] money_account_balances
-- [ ] transactions
-- [ ] recurring_transaction_series
-
----
-
-## Fase 6 — Invitaciones
-
-- [ ] space_invitations
-- [ ] tokens seguros
-- [ ] Resend
-- [ ] aceptación
-- [ ] usuario existente
-- [ ] usuario nuevo
-- [ ] Apple Hide My Email
+- [x] spaces
+- [x] space_members
+- [x] creación de espacio personal
+- [x] lectura de espacios
+- [x] autorización por membresía
 
 ---
 
-## Fase 7 — Sync / guest migration
+## Fase 5 — Core financiero — completada
+
+- [x] categories
+- [x] category_budgets
+- [x] money_accounts
+- [x] money_account_balances
+- [x] transactions
+- [x] recurring_transaction_series
+
+---
+
+## Fase 6 — Invitaciones — completada
+
+- [x] space_invitations
+- [x] tokens seguros
+- [x] Resend
+- [x] aceptación
+- [x] usuario existente
+- [x] usuario nuevo
+- [x] Apple Hide My Email (el flujo trata el email como identificador opaco)
+
+---
+
+## Fase 7 — Sync / guest migration — completada
 
 Solo después de estabilizar el core remoto:
 
-- [ ] analizar SQLite actual
-- [ ] mapping local/remoto
-- [ ] guest migration
-- [ ] idempotencia
-- [ ] resolución de duplicados
-- [ ] reintentos
-- [ ] consistencia
+- [x] analizar SQLite actual
+- [x] mapping local/remoto
+- [x] guest migration
+- [x] idempotencia
+- [x] resolución de duplicados
+- [x] reintentos
+- [x] consistencia
 
 ---
 
-## Fase 8 — Funciones avanzadas
+## Fase 8 — Funciones avanzadas — completada
 
-- [ ] push
-- [ ] import batches
-- [ ] merchant rules
-- [ ] merchant feedback
-- [ ] legal acceptances
-- [ ] storage R2
+- [x] push
+- [x] import batches
+- [x] merchant rules
+- [x] merchant feedback
+- [x] legal acceptances
+- [x] storage R2
 
 ---
 
-# 31. Primera tarea para los agentes
+# 31. Orientación para nuevos agentes
 
-Construir únicamente la Fase 1.
-
-No anticipar las demás fases.
+No reconstruir fases ya completadas. Antes de cambiar el backend, revisar
+`JUNTOSS_API_PROGRESS.md`, ejecutar `npm run typecheck`, `npm test` y, cuando
+esté configurada la base de integración, `npm run test:integration`.
 
 Resultado esperado:
 

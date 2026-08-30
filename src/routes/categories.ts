@@ -1,6 +1,7 @@
 import { Hono, type MiddlewareHandler } from "hono";
 import { normalizeCurrency } from "../lib/currency";
 import { errorResponse } from "../lib/http";
+import { parseBody } from "../lib/validation";
 import { parseMinorAmount } from "../lib/money";
 import type { AuthVariables } from "../middleware/auth";
 import {
@@ -11,6 +12,7 @@ import {
   createCategory,
   deleteCategoryBudget,
   categoryHasFutureRecurringSeries,
+  findCategoryBudgets,
   findCategoryInSpace,
   listCategories,
   updateCategory,
@@ -28,6 +30,7 @@ type CategoriesDependencies = {
   createDb: typeof createDb;
   listCategories: typeof listCategories;
   findCategoryInSpace: typeof findCategoryInSpace;
+  findCategoryBudgets: typeof findCategoryBudgets;
   createCategory: typeof createCategory;
   updateCategory: typeof updateCategory;
   upsertCategoryBudget: typeof upsertCategoryBudget;
@@ -39,6 +42,7 @@ const defaultDependencies: CategoriesDependencies = {
   createDb,
   listCategories,
   findCategoryInSpace,
+  findCategoryBudgets,
   createCategory,
   updateCategory,
   upsertCategoryBudget,
@@ -62,13 +66,13 @@ export function createCategoriesRoute(
 
       return c.json({ data: { categories } });
     } catch {
-      return errorResponse(c, 500, "INTERNAL_ERROR", "Internal error.");
+      return errorResponse(c, "INTERNAL_ERROR", "Internal error.");
     }
   });
 
   route.post("/", async (c) => {
     const input = await parseCreateCategoryInput(c.req.raw);
-    if (!input) return errorResponse(c, 400, "INVALID_REQUEST", "Invalid request.");
+    if (!input) return errorResponse(c, "INVALID_REQUEST", "Invalid request.");
 
     try {
       const category = await dependencies.createCategory(
@@ -82,17 +86,17 @@ export function createCategoriesRoute(
 
       return c.json({ data: { category } }, 201);
     } catch {
-      return errorResponse(c, 500, "INTERNAL_ERROR", "Internal error.");
+      return errorResponse(c, "INTERNAL_ERROR", "Internal error.");
     }
   });
 
   route.patch("/:categoryId", async (c) => {
     const input = await parseUpdateCategoryInput(c.req.raw);
-    if (!input) return errorResponse(c, 400, "INVALID_REQUEST", "Invalid request.");
+    if (!input) return errorResponse(c, "INVALID_REQUEST", "Invalid request.");
 
     try {
       if (input.isArchived === true && await dependencies.categoryHasFutureRecurringSeries(dependencies.createDb(c.env.DATABASE_URL), c.req.param("spaceId")!, c.req.param("categoryId")!)) {
-        return errorResponse(c, 409, "CATEGORY_IN_USE", "Category is in use.");
+        return errorResponse(c, "CATEGORY_IN_USE", "Category is in use.");
       }
       const category = await dependencies.updateCategory(
         dependencies.createDb(c.env.DATABASE_URL),
@@ -104,12 +108,16 @@ export function createCategoriesRoute(
       );
 
       if (!category) {
-        return errorResponse(c, 404, "CATEGORY_NOT_FOUND", "Category not found.");
+        return errorResponse(c, "CATEGORY_NOT_FOUND", "Category not found.");
       }
 
-      return c.json({ data: { category } });
+      const budgets = await dependencies.findCategoryBudgets(
+        dependencies.createDb(c.env.DATABASE_URL),
+        category.id,
+      );
+      return c.json({ data: { category: { ...category, budgets } } });
     } catch {
-      return errorResponse(c, 500, "INTERNAL_ERROR", "Internal error.");
+      return errorResponse(c, "INTERNAL_ERROR", "Internal error.");
     }
   });
 
@@ -117,7 +125,7 @@ export function createCategoriesRoute(
     const budgetAmountMinor = await parseBudgetAmount(c.req.raw);
     const currency = normalizeCurrency(c.req.param("currency"));
     if (budgetAmountMinor === null || !currency) {
-      return errorResponse(c, 400, "INVALID_REQUEST", "Invalid request.");
+      return errorResponse(c, "INVALID_REQUEST", "Invalid request.");
     }
 
     try {
@@ -128,7 +136,7 @@ export function createCategoriesRoute(
         c.req.param("categoryId")!,
       );
       if (!category) {
-        return errorResponse(c, 404, "CATEGORY_NOT_FOUND", "Category not found.");
+        return errorResponse(c, "CATEGORY_NOT_FOUND", "Category not found.");
       }
 
       const budget = await dependencies.upsertCategoryBudget(db, {
@@ -140,13 +148,13 @@ export function createCategoriesRoute(
 
       return c.json({ data: { budget } });
     } catch {
-      return errorResponse(c, 500, "INTERNAL_ERROR", "Internal error.");
+      return errorResponse(c, "INTERNAL_ERROR", "Internal error.");
     }
   });
 
   route.delete("/:categoryId/budgets/:currency", async (c) => {
     const currency = normalizeCurrency(c.req.param("currency"));
-    if (!currency) return errorResponse(c, 400, "INVALID_REQUEST", "Invalid request.");
+    if (!currency) return errorResponse(c, "INVALID_REQUEST", "Invalid request.");
 
     try {
       const db = dependencies.createDb(c.env.DATABASE_URL);
@@ -156,13 +164,13 @@ export function createCategoriesRoute(
         c.req.param("categoryId")!,
       );
       if (!category) {
-        return errorResponse(c, 404, "CATEGORY_NOT_FOUND", "Category not found.");
+        return errorResponse(c, "CATEGORY_NOT_FOUND", "Category not found.");
       }
 
       await dependencies.deleteCategoryBudget(db, category.id, currency);
       return c.body(null, 204);
     } catch {
-      return errorResponse(c, 500, "INTERNAL_ERROR", "Internal error.");
+      return errorResponse(c, "INTERNAL_ERROR", "Internal error.");
     }
   });
 
@@ -172,8 +180,8 @@ export function createCategoriesRoute(
 export const categoriesRoute = createCategoriesRoute();
 
 async function parseCreateCategoryInput(request: Request) {
-  const body = await parseObjectBody(request);
-  if (!body || !hasOnlyKeys(body, ["name", "icon", "colorToken"])) return null;
+  const body = await parseBody(request, ["name", "icon", "colorToken"]);
+  if (!body) return null;
 
   const name = parseCategoryName(body.name);
   const icon = "icon" in body ? parseOptionalText(body.icon) : null;
@@ -185,8 +193,8 @@ async function parseCreateCategoryInput(request: Request) {
 }
 
 async function parseUpdateCategoryInput(request: Request) {
-  const body = await parseObjectBody(request);
-  if (!body || !hasOnlyKeys(body, ["name", "icon", "colorToken", "isArchived"])) {
+  const body = await parseBody(request, ["name", "icon", "colorToken", "isArchived"]);
+  if (!body) {
     return null;
   }
 
@@ -221,23 +229,13 @@ async function parseUpdateCategoryInput(request: Request) {
 }
 
 async function parseBudgetAmount(request: Request) {
-  const body = await parseObjectBody(request);
-  if (!body || !hasOnlyKeys(body, ["budgetAmountMinor"])) return null;
+  const body = await parseBody(request, ["budgetAmountMinor"]);
+  if (!body) return null;
 
   const amount = parseMinorAmount(body.budgetAmountMinor);
   return amount === null || amount < 0n ? null : amount;
 }
 
-async function parseObjectBody(request: Request): Promise<Record<string, unknown> | null> {
-  try {
-    const body = await request.json();
-    return body && typeof body === "object" && !Array.isArray(body)
-      ? (body as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
-}
 
 function parseCategoryName(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -249,8 +247,4 @@ function parseOptionalText(value: unknown): string | null | undefined {
   return value === undefined || value === null || typeof value === "string"
     ? value
     : undefined;
-}
-
-function hasOnlyKeys(body: Record<string, unknown>, allowedKeys: string[]) {
-  return Object.keys(body).every((key) => allowedKeys.includes(key));
 }

@@ -6,7 +6,24 @@
   "compatibility_flags": [
     "nodejs_compat"
   ],
+  // Configuración pública. Los secretos (DATABASE_URL, BETTER_AUTH_SECRET,
+  // GOOGLE_CLIENT_SECRET, RESEND_API_KEY) van con `wrangler secret put` y
+  // nunca aquí.
+  //
+  // GOOGLE_CLIENT_ID no aparece: ya está desplegado como secreto y declararlo
+  // también como var lo sobrescribiría. No es información sensible, pero
+  // moverlo es una operación aparte que se hace en frío, no en un despliegue.
+  "vars": {
+    "BETTER_AUTH_URL": "https://juntosapi.aora-estudio-o.workers.dev",
+    "RESEND_FROM": "Juntoss <no-reply@aoraestudio.com>",
+    "APP_URL": "juntoss://",
+    "ENVIRONMENT": "production"
+  },
+  "r2_buckets": [
+    { "binding": "AVATARS", "bucket_name": "juntoss-avatars" }
+  ],
   "observability": {
     "enabled": true
-  }
+  },
+  "triggers": { "crons": ["0 * * * *"] }
 }

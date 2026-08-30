@@ -66,7 +66,14 @@ describe("Better Auth Factory", () => {
     expect(auth.options.socialProviders?.google?.clientId).toBe(
       mockEnv.GOOGLE_CLIENT_ID
     );
-    expect(auth.options.plugins).toHaveLength(1);
+    expect(auth.options.plugins?.map((plugin) => plugin.id)).toEqual([
+      "expo",
+      "email-otp",
+    ]);
+    expect(auth.options.emailAndPassword?.enabled).toBe(true);
+    // El registro debe confirmar el correo antes de dejar entrar, igual que
+    // hacía la base anterior (`email_not_confirmed`).
+    expect(auth.options.emailAndPassword?.requireEmailVerification).toBe(true);
     expect(auth.options.trustedOrigins).toEqual(["juntoss://", "juntoss://*"]);
   });
 

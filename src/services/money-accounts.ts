@@ -7,6 +7,20 @@ export type BalanceResponse = { currency: string; openingBalanceMinor: string; c
 export type MoneyAccountResponse = { id: string; name: string; kind: "cash" | "bank" | "card"; icon: string | null; colorToken: string | null; primaryCurrency: string; createdAt: Date; balances: BalanceResponse[] };
 
 export async function listMoneyAccounts(db: Database, spaceId: string): Promise<MoneyAccountResponse[]> {
+  return loadMoneyAccounts(db, spaceId);
+}
+
+/**
+ * Una sola cuenta con sus saldos ya calculados. Lo usa el PATCH, que antes
+ * devolvía `balances: []` y hacía que un cliente que fusionara la respuesta
+ * perdiera los saldos de la cuenta.
+ */
+export async function findMoneyAccountWithBalances(db: Database, spaceId: string, accountId: string): Promise<MoneyAccountResponse | null> {
+  const [account] = await loadMoneyAccounts(db, spaceId, accountId);
+  return account ?? null;
+}
+
+async function loadMoneyAccounts(db: Database, spaceId: string, accountId?: string): Promise<MoneyAccountResponse[]> {
   const rows = await db.select({
     id: moneyAccounts.id, name: moneyAccounts.name, kind: moneyAccounts.kind, icon: moneyAccounts.icon, colorToken: moneyAccounts.colorToken, primaryCurrency: moneyAccounts.primaryCurrency, createdAt: moneyAccounts.createdAt,
     balanceId: moneyAccountBalances.id, balanceCurrency: moneyAccountBalances.currency, opening: moneyAccountBalances.openingBalanceMinor, displayOrder: moneyAccountBalances.displayOrder,
@@ -14,7 +28,7 @@ export async function listMoneyAccounts(db: Database, spaceId: string): Promise<
   }).from(moneyAccounts)
     .leftJoin(moneyAccountBalances, eq(moneyAccountBalances.moneyAccountId, moneyAccounts.id))
     .leftJoin(transactions, and(eq(transactions.moneyAccountId, moneyAccounts.id), eq(transactions.currency, moneyAccountBalances.currency), eq(transactions.isArchived, false), isNull(transactions.archivedAt)))
-    .where(and(eq(moneyAccounts.spaceId, spaceId), eq(moneyAccounts.isArchived, false), isNull(moneyAccounts.archivedAt)));
+    .where(and(eq(moneyAccounts.spaceId, spaceId), eq(moneyAccounts.isArchived, false), isNull(moneyAccounts.archivedAt), accountId ? eq(moneyAccounts.id, accountId) : undefined));
 
   const accounts = new Map<string, MoneyAccountResponse>();
   const balances = new Map<string, BalanceResponse & { current: bigint }>();

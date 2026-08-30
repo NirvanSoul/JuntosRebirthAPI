@@ -1,4 +1,5 @@
 import { createMiddleware } from "hono/factory";
+import { errorResponse } from "../lib/http";
 import { createAuth } from "../lib/auth";
 import type { Bindings } from "../types/env";
 
@@ -18,29 +19,13 @@ export function createRequireAuth(resolveSession: SessionResolver) {
         const session = await resolveSession(c.req.raw.headers, c.env);
 
         if (!session) {
-          return c.json(
-            {
-              error: {
-                code: "UNAUTHORIZED",
-                message: "Unauthorized.",
-              },
-            },
-            401,
-          );
+          return errorResponse(c, "UNAUTHORIZED");
         }
 
         c.set("currentUserId", session.userId);
         await next();
       } catch {
-        return c.json(
-          {
-            error: {
-              code: "UNAUTHORIZED",
-              message: "Unauthorized.",
-            },
-          },
-          401,
-        );
+        return errorResponse(c, "UNAUTHORIZED");
       }
     },
   );

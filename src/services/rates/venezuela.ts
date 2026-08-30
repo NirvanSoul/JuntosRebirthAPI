@@ -16,15 +16,27 @@ export type VenezuelaRate = {
 export class VenezuelaRateServiceError extends Error {}
 
 export class VenezuelaRateService {
-  constructor(private readonly fetchFn: typeof fetch = fetch) {}
+  /**
+   * El `fetch` de Workers exige su `this` global. Guardarlo tal cual como
+   * propiedad y llamarlo con `this.fetchFn(...)` le pasa la instancia de la
+   * clase y workerd lo rechaza con "Illegal invocation", así que el valor por
+   * defecto va envuelto. Las pruebas siguen pudiendo inyectar un doble.
+   */
+  constructor(
+    private readonly fetchFn: typeof fetch = (input, init) => fetch(input, init),
+  ) {}
 
   async getRates(): Promise<VenezuelaRate[]> {
     let response: Response;
 
     try {
       response = await this.fetchFn(BCV_RATES_URL);
-    } catch {
-      throw new VenezuelaRateServiceError("Unable to fetch Venezuela rates");
+    } catch (error) {
+      // La causa se conserva: "no se pudo consultar" no dice si fue DNS, TLS o
+      // un rechazo del proveedor, y sin eso no hay forma de diagnosticarlo.
+      throw new VenezuelaRateServiceError("Unable to fetch Venezuela rates", {
+        cause: error,
+      });
     }
 
     if (!response.ok) {

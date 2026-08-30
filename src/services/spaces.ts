@@ -1,6 +1,7 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { createDb, type Database } from "../db/client";
-import { spaceMembers, spaces } from "../db/schema";
+import { categories, spaceMembers, spaces } from "../db/schema";
+import { defaultCategories } from "../constants/default-categories";
 
 export type SpaceSummary = {
   id: string;
@@ -57,6 +58,9 @@ export async function createSpaceWithOwner(
 ): Promise<SpaceSummary> {
   const id = crypto.randomUUID();
   const now = new Date();
+  // Un espacio de pareja no está activo hasta que la invitación se acepta; el
+  // cliente lo muestra como "esperando pareja" mientras `activatedAt` sea null.
+  const activatedAt = input.type === "couple" ? null : now;
 
   await db.batch([
     db.insert(spaces).values({
@@ -66,7 +70,7 @@ export async function createSpaceWithOwner(
       currency: input.currency,
       timezone: input.timezone,
       createdBy: userId,
-      activatedAt: now,
+      activatedAt,
       createdAt: now,
       updatedAt: now,
     }),
@@ -79,6 +83,21 @@ export async function createSpaceWithOwner(
       createdAt: now,
       updatedAt: now,
     }),
+    // Sin categorías el espacio es inutilizable: `categoryId` es obligatorio
+    // tanto en movimientos como en series recurrentes.
+    db.insert(categories).values(
+      defaultCategories.map((definition) => ({
+        spaceId: id,
+        name: definition.name,
+        icon: definition.icon,
+        colorToken: definition.colorToken,
+        createdBy: userId,
+        isDefault: true,
+        templateKey: definition.key,
+        createdAt: now,
+        updatedAt: now,
+      })),
+    ),
   ]);
 
   return {
@@ -88,7 +107,7 @@ export async function createSpaceWithOwner(
     currency: input.currency,
     timezone: input.timezone,
     role: "owner",
-    activatedAt: now,
+    activatedAt,
     createdAt: now,
   };
 }

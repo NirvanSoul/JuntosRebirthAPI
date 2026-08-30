@@ -6,12 +6,12 @@ BETTER_AUTH_URL=
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
 
-APPLE_CLIENT_ID=
-APPLE_TEAM_ID=
-APPLE_KEY_ID=
-APPLE_PRIVATE_KEY=
-
+# Correo transaccional (invitaciones, códigos OTP y restablecimiento).
 RESEND_API_KEY=
+RESEND_FROM=
 
+# Base de los deep links que abren la app, p. ej. juntoss://
 APP_URL=
-API_URL=
+
+# Solo en local: habilita los orígenes exp:// de Expo.
+ENVIRONMENT=development

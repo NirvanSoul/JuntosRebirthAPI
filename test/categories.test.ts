@@ -38,6 +38,9 @@ function createTestApp(overrides: Record<string, unknown> = {}) {
     createDb: () => ({} as Database),
     listCategories: vi.fn().mockResolvedValue([category]),
     findCategoryInSpace: vi.fn().mockResolvedValue({ id: category.id }),
+    findCategoryBudgets: vi.fn().mockResolvedValue([
+      { currency: "EUR", budgetAmountMinor: "30000" },
+    ]),
     createCategory: vi.fn().mockImplementation((_db, input) =>
       Promise.resolve({ ...category, ...input, id: "category-2", budgets: [] }),
     ),
@@ -159,6 +162,25 @@ describe("Categories routes", () => {
       expect.anything(),
       expect.objectContaining({ isArchived: false }),
     );
+  });
+
+  it("PATCH returns the real budgets, not an empty list", async () => {
+    const { testApp } = createTestApp();
+
+    const response = await testApp.request(
+      "/v1/spaces/space-1/categories/category-1",
+      { method: "PATCH", body: JSON.stringify({ name: "Ocio" }) },
+      bindings,
+    );
+    const payload = (await response.json()) as {
+      data: { category: { budgets: unknown[] } };
+    };
+
+    // Un cliente que fusione la respuesta del PATCH no puede perder los
+    // presupuestos que sí devuelve el GET.
+    expect(payload.data.category.budgets).toEqual([
+      { currency: "EUR", budgetAmountMinor: "30000" },
+    ]);
   });
 
   it("PUT creates or updates one normalized budget through the shared upsert", async () => {

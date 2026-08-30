@@ -6,6 +6,10 @@ import { serializeMinorAmount } from "../lib/money";
 export type TransactionResponse = {
   id: string; type: "expense" | "income"; amountMinor: string; currency: string;
   title: string; occurredOn: string; categoryId: string; moneyAccountId: string | null;
+  note: string | null;
+  /** Solo lo escriben el motor de recurrencias y la sincronización por lotes. */
+  recurrence: "once" | "weekly" | "biweekly" | "monthly" | "custom";
+  recurrenceGroupId: string | null;
   recurrenceSeriesId: string | null; createdAt: Date; updatedAt: Date;
 };
 export type TransactionCursor = { occurredOn: string; createdAt: string; id: string };
@@ -14,6 +18,8 @@ function selectFields() {
   return { id: transactions.id, type: transactions.type, amountMinor: transactions.amountMinor,
     currency: transactions.currency, title: transactions.title, occurredOn: transactions.occurredOn,
     categoryId: transactions.categoryId, moneyAccountId: transactions.moneyAccountId,
+    note: transactions.note, recurrence: transactions.recurrence,
+    recurrenceGroupId: transactions.recurrenceGroupId,
     recurrenceSeriesId: transactions.recurrenceSeriesId, createdAt: transactions.createdAt, updatedAt: transactions.updatedAt };
 }
 function serialize(row: Omit<TransactionResponse, "amountMinor"> & { amountMinor: bigint }): TransactionResponse {
@@ -49,13 +55,13 @@ export async function findTransactionInSpace(db: Database, spaceId: string, tran
   const [row] = await db.select(selectFields()).from(transactions).where(and(eq(transactions.id, transactionId), eq(transactions.spaceId, spaceId)));
   return row ? serialize(row) : null;
 }
-export async function createTransaction(db: Database, input: { spaceId: string; userId: string; type: "expense" | "income"; amountMinor: bigint; currency: string; title: string; occurredOn: string; categoryId: string; moneyAccountId: string | null }) {
+export async function createTransaction(db: Database, input: { spaceId: string; userId: string; type: "expense" | "income"; amountMinor: bigint; currency: string; title: string; occurredOn: string; categoryId: string; moneyAccountId: string | null; note?: string | null }) {
   const [row] = await db.insert(transactions).values({ ...input, recurrenceSeriesId: null }).returning(selectFields());
   return serialize(row);
 }
-export async function updateTransaction(db: Database, input: { spaceId: string; transactionId: string; type?: "expense" | "income"; amountMinor?: bigint; currency?: string; title?: string; occurredOn?: string; categoryId?: string; moneyAccountId?: string | null; isArchived?: boolean }) {
+export async function updateTransaction(db: Database, input: { spaceId: string; transactionId: string; type?: "expense" | "income"; amountMinor?: bigint; currency?: string; title?: string; occurredOn?: string; categoryId?: string; moneyAccountId?: string | null; note?: string | null; isArchived?: boolean }) {
   const values: Record<string, unknown> = { updatedAt: new Date() };
-  for (const key of ["type", "amountMinor", "currency", "title", "occurredOn", "categoryId", "moneyAccountId"] as const) if (input[key] !== undefined) values[key] = input[key];
+  for (const key of ["type", "amountMinor", "currency", "title", "occurredOn", "categoryId", "moneyAccountId", "note"] as const) if (input[key] !== undefined) values[key] = input[key];
   if (input.isArchived !== undefined) { values.isArchived = input.isArchived; values.archivedAt = input.isArchived ? new Date() : null; }
   const [row] = await db.update(transactions).set(values).where(and(eq(transactions.id, input.transactionId), eq(transactions.spaceId, input.spaceId))).returning(selectFields());
   return row ? serialize(row) : null;

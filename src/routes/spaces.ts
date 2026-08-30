@@ -1,4 +1,7 @@
-import { Hono, type Context } from "hono";
+import { Hono } from "hono";
+import { errorResponse } from "../lib/http";
+import { isUniqueViolation } from "../lib/pg";
+import { boundedString, parseBody } from "../lib/validation";
 import { normalizeCurrency } from "../lib/currency";
 import { normalizeTimeZone } from "../lib/timezone";
 import {
@@ -42,7 +45,7 @@ export function createSpacesRoute(
 
       return c.json({ data: { spaces } });
     } catch {
-      return internalError(c);
+      return errorResponse(c, "INTERNAL_ERROR");
     }
   });
 
@@ -50,15 +53,7 @@ export function createSpacesRoute(
     const input = await parseCreateSpaceInput(c.req.raw);
 
     if (!input) {
-      return c.json(
-        {
-          error: {
-            code: "INVALID_REQUEST",
-            message: "Invalid request.",
-          },
-        },
-        400,
-      );
+      return errorResponse(c, "INVALID_REQUEST");
     }
 
     try {
@@ -70,8 +65,13 @@ export function createSpacesRoute(
       );
 
       return c.json({ data: { space } }, 201);
-    } catch {
-      return internalError(c);
+    } catch (error) {
+      // Solo se admite un espacio de pareja activo por persona; el índice
+      // parcial es quien lo garantiza, así que aquí se traduce su choque.
+      if (isUniqueViolation(error, "spaces_one_active_couple_per_creator_idx")) {
+        return errorResponse(c, "COUPLE_SPACE_LIMIT");
+      }
+      return errorResponse(c, "INTERNAL_ERROR");
     }
   });
 
@@ -83,24 +83,16 @@ export const spacesRoute = createSpacesRoute();
 async function parseCreateSpaceInput(
   request: Request,
 ): Promise<CreateSpaceInput | null> {
-  let body: unknown;
+  const body = await parseBody(request, ["name", "type", "currency", "timezone"]);
+  if (!body) return null;
 
-  try {
-    body = await request.json();
-  } catch {
-    return null;
-  }
-
-  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
-
-  const { name, type, currency, timezone } = body as Record<string, unknown>;
-  const normalizedName = typeof name === "string" ? name.trim() : "";
+  const { name, type, currency, timezone } = body;
+  const normalizedName = boundedString(name, 80);
   const normalizedCurrency = normalizeCurrency(currency);
   const normalizedTimezone = normalizeTimeZone(timezone);
 
   if (
-    normalizedName.length === 0 ||
-    normalizedName.length > 80 ||
+    !normalizedName ||
     (type !== "personal" && type !== "couple" && type !== "other") ||
     !normalizedCurrency ||
     !normalizedTimezone
@@ -109,16 +101,4 @@ async function parseCreateSpaceInput(
   }
 
   return { name: normalizedName, type, currency: normalizedCurrency, timezone: normalizedTimezone };
-}
-
-function internalError(c: Context<SpacesEnvironment>) {
-  return c.json(
-    {
-      error: {
-        code: "INTERNAL_ERROR",
-        message: "Internal error.",
-      },
-    },
-    500,
-  );
 }

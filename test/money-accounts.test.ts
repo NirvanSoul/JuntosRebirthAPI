@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Database } from "../src/db/client";
 import { createMoneyAccountWithBalances, listMoneyAccounts } from "../src/services/money-accounts";
+import { parseCreateMoneyAccountInput } from "../src/routes/money-accounts";
 
 function databaseWithRows(rows: unknown[]) {
   const chain = { leftJoin: () => chain, where: () => Promise.resolve(rows) };
@@ -32,5 +33,37 @@ describe("money account balances", () => {
     expect(batch.mock.calls[0]?.[0]).toHaveLength(3);
     expect(account.balances[1]).toMatchObject({openingBalanceMinor:"-2500",currentBalanceMinor:"-2500"});
     expect(inserted).toHaveLength(3);
+  });
+});
+
+describe("create money account input", () => {
+  function body(payload: unknown) {
+    return new Request("https://x/", { method: "POST", body: JSON.stringify(payload) });
+  }
+
+  const base = {
+    name: "Wallet",
+    kind: "cash",
+    primaryCurrency: "EUR",
+    balances: [{ currency: "EUR", openingBalanceMinor: "100000", displayOrder: 0 }],
+  };
+
+  it("accepts a payload that omits the optional icon and colorToken", async () => {
+    // Están documentados como opcionales: omitirlos devolvía 400.
+    const input = await parseCreateMoneyAccountInput(body(base));
+
+    expect(input).toMatchObject({ name: "Wallet", icon: null, colorToken: null });
+  });
+
+  it("still accepts them as explicit nulls or strings", async () => {
+    await expect(
+      parseCreateMoneyAccountInput(body({ ...base, icon: null, colorToken: "teal" })),
+    ).resolves.toMatchObject({ icon: null, colorToken: "teal" });
+  });
+
+  it("rejects a wrong type instead of treating it as absent", async () => {
+    await expect(
+      parseCreateMoneyAccountInput(body({ ...base, icon: 42 })),
+    ).resolves.toBeNull();
   });
 });

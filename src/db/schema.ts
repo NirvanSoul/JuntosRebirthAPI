@@ -12,6 +12,7 @@ import {
   uuid,
   bigint,
   numeric,
+  jsonb,
   varchar,
   pgEnum,
 } from "drizzle-orm/pg-core";
@@ -117,8 +118,61 @@ export const spaceMemberStatusEnum = pgEnum("space_member_status", [
 export const spaceInvitationStatusEnum = pgEnum("space_invitation_status", [
   "pending",
   "accepted",
+  // Rechazada por la persona invitada; `revoked` lo hace quien invitó.
+  "declined",
   "revoked",
   "expired",
+]);
+
+export const pushPlatformEnum = pgEnum("push_platform", ["ios", "android"]);
+
+export const importSourceTypeEnum = pgEnum("import_source_type", [
+  "xls",
+  "xlsx",
+  "csv",
+  "tsv",
+]);
+
+export const importBatchStatusEnum = pgEnum("import_batch_status", [
+  "parsing",
+  "mapping_required",
+  "needs_review",
+  "ready",
+  "imported",
+  "failed",
+  "cancelled",
+]);
+
+export const importMovementTypeEnum = pgEnum("import_movement_type", [
+  "expense",
+  "income",
+  "unknown",
+]);
+
+export const importDuplicateStatusEnum = pgEnum("import_duplicate_status", [
+  "none",
+  "exact",
+  "probable",
+]);
+
+export const importItemStatusEnum = pgEnum("import_item_status", [
+  "pending",
+  "ready",
+  "ignored",
+  "duplicate",
+  "imported",
+  "error",
+]);
+
+export const merchantRuleSourceEnum = pgEnum("merchant_rule_source", [
+  "manual",
+  "import_correction",
+  "system",
+]);
+
+export const legalDocumentTypeEnum = pgEnum("legal_document_type", [
+  "privacy-policy",
+  "terms-of-service",
 ]);
 
 export const guestMigrationStatusEnum = pgEnum("guest_migration_status", [
@@ -138,6 +192,14 @@ export const transactionTypeEnum = pgEnum("transaction_type", [
   "income",
 ]);
 
+export const transactionRecurrenceEnum = pgEnum("transaction_recurrence", [
+  "once",
+  "weekly",
+  "biweekly",
+  "monthly",
+  "custom",
+]);
+
 export const recurringTransactionFrequencyEnum = pgEnum(
   "recurring_transaction_frequency",
   ["weekly", "biweekly", "monthly", "custom"],
@@ -149,6 +211,69 @@ export const recurringTransactionOccurrenceStatusEnum = pgEnum(
 );
 
 // Juntoss Tables
+
+/**
+ * Bloqueo de fuerza bruta por correo. Sustituye la edge function
+ * `login-with-lockout` de la base anterior: 9 intentos fallidos bloquean el
+ * acceso durante una hora. Se indexa por correo en minúsculas, nunca por
+ * usuario, para no revelar si la cuenta existe.
+ */
+export const loginAttempts = pgTable("login_attempts", {
+  email: text("email").primaryKey(),
+  failedCount: integer("failed_count").default(0).notNull(),
+  lockedUntil: timestamp("locked_until", { withTimezone: true }),
+  lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+});
+
+/**
+ * Tokens de Expo para notificaciones push. La clave primaria es el token: el
+ * mismo dispositivo puede cambiar de cuenta y el token debe seguir a la última.
+ */
+export const userPushTokens = pgTable(
+  "user_push_tokens",
+  {
+    expoPushToken: text("expo_push_token").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    platform: pushPlatformEnum("platform").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull(),
+  },
+  (table) => [
+    index("user_push_tokens_user_idx").on(table.userId),
+    check(
+      "user_push_tokens_expo_format",
+      sql`${table.expoPushToken} ~ '^Expo(nent)?PushToken\\[[^\\]]+\\]$'`,
+    ),
+  ],
+);
+
+/** Registro de consentimientos. Obligatorio para el RGPD y para las stores. */
+export const legalAcceptances = pgTable(
+  "legal_acceptances",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    documentType: legalDocumentTypeEnum("document_type").notNull(),
+    documentVersion: text("document_version").notNull(),
+    appVersion: text("app_version"),
+    locale: text("locale"),
+    source: text("source"),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [index("legal_acceptances_user_idx").on(table.userId, table.documentType)],
+);
+
 export const userProfiles = pgTable("user_profiles", {
   userId: text("user_id")
     .primaryKey()
@@ -181,8 +306,13 @@ export const spaces = pgTable(
     createdBy: text("created_by").references(() => user.id, {
       onDelete: "set null",
     }),
-    activatedAt: timestamp("activated_at", { withTimezone: true }).defaultNow(),
+    // Sin `defaultNow()`: un espacio `couple` nace con `activated_at = NULL` y
+    // solo se activa cuando la pareja acepta la invitación. El cliente deriva
+    // de aquí su estado "esperando pareja".
+    activatedAt: timestamp("activated_at", { withTimezone: true }),
     archivedAt: timestamp("archived_at", { withTimezone: true }),
+    sourceInstallationId: text("source_installation_id"),
+    sourceLocalId: text("source_local_id"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -191,7 +321,16 @@ export const spaces = pgTable(
       .$onUpdate(() => /* @__PURE__ */ new Date())
       .notNull(),
   },
-  (table) => [index("spaces_createdBy_idx").on(table.createdBy)],
+  (table) => [
+    index("spaces_createdBy_idx").on(table.createdBy),
+    uniqueIndex("spaces_source_local_idx")
+      .on(table.createdBy, table.sourceInstallationId, table.sourceLocalId)
+      .where(sql`${table.sourceLocalId} IS NOT NULL`),
+    // Un usuario solo puede tener un espacio de pareja activo a la vez.
+    uniqueIndex("spaces_one_active_couple_per_creator_idx")
+      .on(table.createdBy)
+      .where(sql`${table.type} = 'couple' AND ${table.archivedAt} IS NULL`),
+  ],
 );
 
 export const spaceMembers = pgTable(
@@ -240,7 +379,12 @@ export const spaceInvitations = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().$onUpdate(() => new Date()).notNull(),
   },
-  (table) => [index("space_invitations_space_status_idx").on(table.spaceId, table.status)],
+  (table) => [
+    index("space_invitations_space_status_idx").on(table.spaceId, table.status),
+    // La migración 0015 añade además un índice único parcial sobre
+    // (space_id, lower(invited_email)) WHERE status = 'pending'. Drizzle no
+    // sabe expresar `lower()` dentro de un índice, así que vive solo en el SQL.
+  ],
 );
 
 export const guestMigrationBatches = pgTable(
@@ -286,6 +430,8 @@ export const categories = pgTable(
     }),
     isDefault: boolean("is_default").default(false).notNull(),
     templateKey: text("template_key"),
+    sourceInstallationId: text("source_installation_id"),
+    sourceLocalId: text("source_local_id"),
     isArchived: boolean("is_archived").default(false).notNull(),
     archivedAt: timestamp("archived_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -296,7 +442,16 @@ export const categories = pgTable(
       .$onUpdate(() => /* @__PURE__ */ new Date())
       .notNull(),
   },
-  (table) => [index("categories_spaceId_idx").on(table.spaceId)],
+  (table) => [
+    index("categories_spaceId_idx").on(table.spaceId),
+    // Creado por la migración 0007; faltaba aquí y hacía divergir el snapshot.
+    uniqueIndex("categories_space_template_key_idx")
+      .on(table.spaceId, table.templateKey)
+      .where(sql`${table.templateKey} IS NOT NULL`),
+    uniqueIndex("categories_source_local_idx")
+      .on(table.spaceId, table.sourceInstallationId, table.sourceLocalId)
+      .where(sql`${table.sourceLocalId} IS NOT NULL`),
+  ],
 );
 
 export const categoryBudgets = pgTable(
@@ -347,6 +502,8 @@ export const moneyAccounts = pgTable(
     createdBy: text("created_by").references(() => user.id, {
       onDelete: "set null",
     }),
+    sourceInstallationId: text("source_installation_id"),
+    sourceLocalId: text("source_local_id"),
     isArchived: boolean("is_archived").default(false).notNull(),
     archivedAt: timestamp("archived_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -357,7 +514,12 @@ export const moneyAccounts = pgTable(
       .$onUpdate(() => /* @__PURE__ */ new Date())
       .notNull(),
   },
-  (table) => [index("money_accounts_spaceId_idx").on(table.spaceId)],
+  (table) => [
+    index("money_accounts_spaceId_idx").on(table.spaceId),
+    uniqueIndex("money_accounts_source_local_idx")
+      .on(table.spaceId, table.sourceInstallationId, table.sourceLocalId)
+      .where(sql`${table.sourceLocalId} IS NOT NULL`),
+  ],
 );
 
 export const moneyAccountBalances = pgTable(
@@ -416,6 +578,8 @@ export const recurringTransactionSeries = pgTable(
     startsOn: date("starts_on").notNull(),
     nextOccurrenceOn: date("next_occurrence_on"),
     generatedOccurrences: integer("generated_occurrences").default(0).notNull(),
+    sourceInstallationId: text("source_installation_id"),
+    sourceLocalId: text("source_local_id"),
     isArchived: boolean("is_archived").default(false).notNull(),
     archivedAt: timestamp("archived_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -441,6 +605,9 @@ export const recurringTransactionSeries = pgTable(
       table.isArchived,
       table.nextOccurrenceOn,
     ),
+    uniqueIndex("recurring_transaction_series_source_local_idx")
+      .on(table.spaceId, table.sourceInstallationId, table.sourceLocalId)
+      .where(sql`${table.sourceLocalId} IS NOT NULL`),
   ],
 );
 
@@ -465,9 +632,18 @@ export const transactions = pgTable(
     currency: varchar("currency", { length: 3 }).notNull(),
     title: text("title").notNull(),
     occurredOn: date("occurred_on").notNull(),
+    note: text("note"),
+    // El SQLite local modela las recurrencias personalizadas como N movimientos
+    // que comparten `recurrence_group_id`, sin serie. Sin estas dos columnas la
+    // agrupación se perdía al migrar o restaurar.
+    recurrence: transactionRecurrenceEnum("recurrence").default("once").notNull(),
+    recurrenceGroupId: text("recurrence_group_id"),
     recurrenceSeriesId: uuid("recurrence_series_id").references(
       () => recurringTransactionSeries.id,
     ),
+    sourceLocalTransactionId: text("source_local_transaction_id"),
+    sourceInstallationId: text("source_installation_id"),
+    sourceLocalId: text("source_local_id"),
     isArchived: boolean("is_archived").default(false).notNull(),
     archivedAt: timestamp("archived_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -494,6 +670,12 @@ export const transactions = pgTable(
       table.recurrenceSeriesId,
       table.occurredOn,
     ).where(sql`${table.recurrenceSeriesId} IS NOT NULL`),
+    index("transactions_recurrence_group_idx")
+      .on(table.spaceId, table.recurrenceGroupId)
+      .where(sql`${table.recurrenceGroupId} IS NOT NULL`),
+    uniqueIndex("transactions_source_local_idx")
+      .on(table.spaceId, table.sourceInstallationId, table.sourceLocalId)
+      .where(sql`${table.sourceLocalId} IS NOT NULL`),
   ],
 );
 
@@ -791,4 +973,177 @@ export const transactionReferenceRatesRelations = relations(
       references: [exchangeRateSnapshots.id],
     }),
   }),
+);
+
+// ---------------------------------------------------------------------------
+// Importación bancaria
+//
+// A diferencia del ledger, estas filas son del usuario y no del espacio: la
+// autorización es `user_id = sesión`, igual que hacían las políticas RLS
+// `own-rows only` de la base anterior.
+// ---------------------------------------------------------------------------
+
+export const importBatches = pgTable(
+  "import_batches",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    spaceId: uuid("space_id")
+      .notNull()
+      .references(() => spaces.id, { onDelete: "cascade" }),
+    sourceType: importSourceTypeEnum("source_type").notNull(),
+    sourceProfile: text("source_profile"),
+    fileHash: text("file_hash"),
+    status: importBatchStatusEnum("status").notNull(),
+    totalItems: integer("total_items").default(0).notNull(),
+    reviewItems: integer("review_items").default(0).notNull(),
+    duplicateItems: integer("duplicate_items").default(0).notNull(),
+    sourceInstallationId: text("source_installation_id"),
+    sourceLocalId: text("source_local_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (table) => [
+    index("import_batches_user_status_idx").on(table.userId, table.status),
+    uniqueIndex("import_batches_source_local_idx")
+      .on(table.userId, table.sourceInstallationId, table.sourceLocalId)
+      .where(sql`${table.sourceLocalId} IS NOT NULL`),
+  ],
+);
+
+export const importItems = pgTable(
+  "import_items",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    batchId: uuid("batch_id")
+      .notNull()
+      .references(() => importBatches.id, { onDelete: "cascade" }),
+    sourceRow: integer("source_row").notNull(),
+    sheetName: text("sheet_name"),
+    rawDescription: text("raw_description").notNull(),
+    normalizedMerchant: text("normalized_merchant").notNull(),
+    occurredOn: date("occurred_on"),
+    amountMinor: bigint("amount_minor", { mode: "bigint" }),
+    currency: varchar("currency", { length: 3 }),
+    movementType: importMovementTypeEnum("movement_type").notNull(),
+    finalCategoryId: uuid("final_category_id").references(() => categories.id, {
+      onDelete: "set null",
+    }),
+    duplicateStatus: importDuplicateStatusEnum("duplicate_status").default("none").notNull(),
+    duplicateTransactionId: uuid("duplicate_transaction_id").references(
+      () => transactions.id,
+      { onDelete: "set null" },
+    ),
+    itemStatus: importItemStatusEnum("item_status").notNull(),
+    isSelected: boolean("is_selected").default(true).notNull(),
+    createdTransactionId: uuid("created_transaction_id").references(() => transactions.id, {
+      onDelete: "set null",
+    }),
+    issues: jsonb("issues").default(sql`'[]'::jsonb`).notNull(),
+    sourceInstallationId: text("source_installation_id"),
+    sourceLocalId: text("source_local_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull(),
+  },
+  (table) => [
+    index("import_items_batch_idx").on(table.batchId),
+    uniqueIndex("import_items_source_local_idx")
+      .on(table.batchId, table.sourceInstallationId, table.sourceLocalId)
+      .where(sql`${table.sourceLocalId} IS NOT NULL`),
+    check("import_items_source_row_positive", sql`${table.sourceRow} > 0`),
+  ],
+);
+
+export const userMerchantRules = pgTable(
+  "user_merchant_rules",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    spaceId: uuid("space_id")
+      .notNull()
+      .references(() => spaces.id, { onDelete: "cascade" }),
+    normalizedMerchant: text("normalized_merchant").notNull(),
+    categoryId: uuid("category_id")
+      .notNull()
+      .references(() => categories.id, { onDelete: "cascade" }),
+    confirmations: integer("confirmations").default(1).notNull(),
+    source: merchantRuleSourceEnum("source").notNull(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex("user_merchant_rules_unique_idx").on(
+      table.userId,
+      table.spaceId,
+      table.normalizedMerchant,
+    ),
+    check("user_merchant_rules_confirmations_positive", sql`${table.confirmations} >= 1`),
+  ],
+);
+
+/**
+ * Un voto por persona y comercio. El agregado se mantiene en la misma
+ * escritura, así que no hace falta un proceso aparte para reconstruirlo.
+ */
+export const merchantFeedbackVotes = pgTable(
+  "merchant_feedback_votes",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    countryCode: varchar("country_code", { length: 2 }).notNull(),
+    normalizedMerchant: text("normalized_merchant").notNull(),
+    canonicalCategoryKey: text("canonical_category_key").notNull(),
+    confirmations: integer("confirmations").default(1).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex("merchant_feedback_votes_pk").on(
+      table.userId,
+      table.countryCode,
+      table.normalizedMerchant,
+    ),
+    check(
+      "merchant_feedback_votes_key_format",
+      sql`${table.canonicalCategoryKey} ~ '^[a-z0-9_]{2,64}$'`,
+    ),
+  ],
+);
+
+export const merchantFeedbackAggregates = pgTable(
+  "merchant_feedback_aggregates",
+  {
+    countryCode: varchar("country_code", { length: 2 }).notNull(),
+    normalizedMerchant: text("normalized_merchant").notNull(),
+    canonicalCategoryKey: text("canonical_category_key").notNull(),
+    uniqueUsers: integer("unique_users").default(0).notNull(),
+    totalConfirmations: integer("total_confirmations").default(0).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("merchant_feedback_aggregates_pk").on(
+      table.countryCode,
+      table.normalizedMerchant,
+      table.canonicalCategoryKey,
+    ),
+  ],
 );
