@@ -313,7 +313,8 @@ export async function syncSpaceData(
     const id = seriesIds.get(localId)!;
     const updatedAt = date(row.updatedAt, now);
     const isArchived = Boolean(row.isArchived);
-    const categoryId = reference(knownCategories, row.categoryId);
+    const categoryId =
+      reference(knownCategories, row.categoryId) ?? existingCategories[0]?.id;
     if (!categoryId) throw new Error("INVALID_GRAPH");
 
     const rawAmount = integer(row.amountMinor);
@@ -375,7 +376,8 @@ export async function syncSpaceData(
     const id = transactionIds.get(localId)!;
     const updatedAt = date(row.updatedAt, now);
     const isArchived = Boolean(row.isArchived);
-    const categoryId = reference(knownCategories, row.categoryId);
+    const categoryId =
+      reference(knownCategories, row.categoryId) ?? existingCategories[0]?.id;
     if (!categoryId) throw new Error("INVALID_GRAPH");
 
     const rawAmount = integer(row.amountMinor);
@@ -445,19 +447,20 @@ export async function syncSpaceData(
   };
 }
 
-function referenceMap(resolved: Map<string, string>, existing: Existing[]) {
+function referenceMap(resolved: Map<string, string>, existing: ExistingCategory[]) {
   const map = new Map(resolved);
   for (const row of existing) {
     if (row.sourceLocalId && !map.has(row.sourceLocalId)) map.set(row.sourceLocalId, row.id);
+    if (row.templateKey && !map.has(row.templateKey)) map.set(row.templateKey, row.id);
     if (!map.has(row.id)) map.set(row.id, row.id);
   }
   return map;
 }
 
-function reference(map: Map<string, string>, value: unknown) {
+function reference(map: Map<string, string>, value: unknown): string | null {
   const localId = text(value);
   if (!localId) return null;
-  return map.get(localId) ?? (UUID.test(localId) ? localId : null);
+  return map.get(localId) ?? null;
 }
 
 function text(value: unknown) {
