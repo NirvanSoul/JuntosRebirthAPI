@@ -316,6 +316,13 @@ export async function syncSpaceData(
     const categoryId = reference(knownCategories, row.categoryId);
     if (!categoryId) throw new Error("INVALID_GRAPH");
 
+    const rawAmount = integer(row.amountMinor);
+    const amountMinor = BigInt(Math.max(1, rawAmount));
+    const startsOn = dateOnly(row.startsOn, now.toISOString().slice(0, 10));
+    const nextOccurrenceOn = isArchived
+      ? null
+      : stringOrNull(dateOnly(row.nextOccurrenceOn, startsOn));
+
     writes.push(
       db
         .insert(recurringTransactionSeries)
@@ -326,12 +333,12 @@ export async function syncSpaceData(
           moneyAccountId: reference(knownAccounts, row.moneyAccountId),
           createdBy: userId,
           type: transactionType(row.type),
-          amountMinor: BigInt(integer(row.amountMinor)),
+          amountMinor,
           currency: text(row.currency),
           title: text(row.title),
           frequency: frequency(row.frequency),
-          startsOn: text(row.startsOn),
-          nextOccurrenceOn: isArchived ? null : stringOrNull(row.nextOccurrenceOn),
+          startsOn,
+          nextOccurrenceOn,
           generatedOccurrences: integer(row.generatedOccurrences ?? 0),
           ...source(localId),
           isArchived,
@@ -371,6 +378,10 @@ export async function syncSpaceData(
     const categoryId = reference(knownCategories, row.categoryId);
     if (!categoryId) throw new Error("INVALID_GRAPH");
 
+    const rawAmount = integer(row.amountMinor);
+    const amountMinor = BigInt(Math.max(1, rawAmount));
+    const occurredOn = dateOnly(row.occurredOn, now.toISOString().slice(0, 10));
+
     writes.push(
       db
         .insert(transactions)
@@ -381,10 +392,10 @@ export async function syncSpaceData(
           moneyAccountId: reference(knownAccounts, row.moneyAccountId),
           createdBy: userId,
           type: transactionType(row.type),
-          amountMinor: BigInt(integer(row.amountMinor)),
+          amountMinor,
           currency: text(row.currency),
           title: text(row.title),
-          occurredOn: text(row.occurredOn),
+          occurredOn,
           note: stringOrNull(row.note),
           recurrence: recurrenceKind(row.recurrence),
           recurrenceGroupId: stringOrNull(row.recurrenceGroupId),
@@ -467,6 +478,14 @@ function integer(value: unknown) {
 function date(value: unknown, fallback: Date) {
   if (typeof value !== "string" || Number.isNaN(Date.parse(value))) return fallback;
   return new Date(value);
+}
+
+function dateOnly(value: unknown, fallback: string): string {
+  if (typeof value === "string") {
+    const match = /^(\d{4}-\d{2}-\d{2})/.exec(value.trim());
+    if (match) return match[1];
+  }
+  return fallback;
 }
 
 function accountKind(value: unknown) {
