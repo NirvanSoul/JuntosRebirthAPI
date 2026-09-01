@@ -9,6 +9,7 @@ import type { Bindings } from "../types/env";
 import * as service from "../services/account";
 import {
   deleteAccount,
+  deleteAccountData,
   exportAccount,
   recordLegalAcceptance,
 } from "../services/account-lifecycle";
@@ -20,6 +21,7 @@ type Dependencies = typeof service & {
   recordLegalAcceptance: typeof recordLegalAcceptance;
   exportAccount: typeof exportAccount;
   deleteAccount: typeof deleteAccount;
+  deleteAccountData: typeof deleteAccountData;
   deleteAvatar: typeof deleteAvatar;
 };
 const defaults: Dependencies = {
@@ -28,6 +30,7 @@ const defaults: Dependencies = {
   recordLegalAcceptance,
   exportAccount,
   deleteAccount,
+  deleteAccountData,
   deleteAvatar,
 };
 
@@ -132,6 +135,23 @@ export function createAccountRoute(deps: Dependencies = defaults) {
     }
   });
 
+  route.delete("/me/data", async (c) => {
+    const confirmed = await parseDataDeleteConfirmation(c.req.raw);
+    if (!confirmed) return errorResponse(c, "DELETE_DATA_CONFIRMATION_REQUIRED");
+
+    const userId = c.get("currentUserId");
+    try {
+      if (c.env.AVATARS) {
+        await deps.deleteAvatar(deps.createDb(c.env.DATABASE_URL), c.env.AVATARS, userId);
+      }
+      await deps.deleteAccountData(deps.createDb(c.env.DATABASE_URL), userId);
+      return c.body(null, 204);
+    } catch (error) {
+      console.error("Account data deletion failed:", error);
+      return errorResponse(c, "INTERNAL_SERVER_ERROR");
+    }
+  });
+
   return route;
 }
 
@@ -144,6 +164,11 @@ export const accountRoute = createAccountRoute();
 async function parseDeleteConfirmation(request: Request): Promise<boolean> {
   const body = await parseBody(request, ["confirmation"]);
   return body?.confirmation === "DELETE_MY_ACCOUNT";
+}
+
+async function parseDataDeleteConfirmation(request: Request): Promise<boolean> {
+  const body = await parseBody(request, ["confirmation"]);
+  return body?.confirmation === "DELETE_MY_DATA";
 }
 
 async function parseLegalAcceptance(request: Request) {

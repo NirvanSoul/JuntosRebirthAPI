@@ -32,11 +32,32 @@ export async function normalizeAuthErrorResponse(
   const code = rawCode && AUTH_ERROR_CODES[rawCode]
     ? AUTH_ERROR_CODES[rawCode]
     : fallbackCode(response.status);
-  const normalized = errorResponse(c, code);
+  // Solo se conserva este metadato de control de flujo. No reenviamos el
+  // mensaje ni otros detalles de Better Auth, que podrían exponer información
+  // interna; el cliente lo usa para informar cuándo puede reintentarse.
+  const lockedUntil = readLockedUntil(payload);
+  const normalized = errorResponse(
+    c,
+    code,
+    undefined,
+    lockedUntil ? { lockedUntil } : undefined,
+  );
   const retryAfter = response.headers.get("retry-after")
     ?? response.headers.get("x-retry-after");
   if (retryAfter) normalized.headers.set("Retry-After", retryAfter);
   return normalized;
+}
+
+function readLockedUntil(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") return null;
+  const record = payload as Record<string, unknown>;
+  const source = record.error && typeof record.error === "object"
+    ? record.error as Record<string, unknown>
+    : record;
+  if (typeof source.lockedUntil !== "string") return null;
+  return Number.isNaN(new Date(source.lockedUntil).getTime())
+    ? null
+    : source.lockedUntil;
 }
 
 function readCode(payload: unknown): string | null {

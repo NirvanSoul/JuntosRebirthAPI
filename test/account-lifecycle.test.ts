@@ -15,6 +15,7 @@ function appWith(overrides: Record<string, unknown>, env: Partial<Bindings> = {}
     recordLegalAcceptance: vi.fn().mockResolvedValue({ id: "acc-1" }),
     exportAccount: vi.fn().mockResolvedValue({ spaces: [] }),
     deleteAccount: vi.fn().mockResolvedValue(undefined),
+    deleteAccountData: vi.fn().mockResolvedValue(undefined),
     deleteAvatar: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   } as unknown as NonNullable<Parameters<typeof createAccountRoute>[0]>;
@@ -34,6 +35,14 @@ function post(body: unknown) {
 }
 
 function deleteAccount(confirmation?: string) {
+  return {
+    method: "DELETE",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(confirmation ? { confirmation } : {}),
+  };
+}
+
+function deleteData(confirmation?: string) {
   return {
     method: "DELETE",
     headers: { "content-type": "application/json" },
@@ -175,6 +184,29 @@ describe("account export and deletion", () => {
       });
     }
     expect(deps.deleteAvatar).not.toHaveBeenCalled();
+    expect(deps.deleteAccount).not.toHaveBeenCalled();
+  });
+
+  it("removes account data but keeps the credentials only after confirmation", async () => {
+    const order: string[] = [];
+    const { app, deps, env } = appWith({
+      deleteAvatar: vi.fn(async () => order.push("avatar")),
+      deleteAccountData: vi.fn(async () => order.push("data")),
+    }, { AVATARS: {} as R2Bucket });
+
+    const rejected = await app.request("/v1/me/data", deleteData(), env);
+    expect(rejected.status).toBe(400);
+    await expect(rejected.json()).resolves.toEqual({
+      error: {
+        code: "DELETE_DATA_CONFIRMATION_REQUIRED",
+        message: "Confirm data deletion to continue.",
+      },
+    });
+
+    const response = await app.request("/v1/me/data", deleteData("DELETE_MY_DATA"), env);
+    expect(response.status).toBe(204);
+    expect(order).toEqual(["avatar", "data"]);
+    expect(deps.deleteAccountData).toHaveBeenCalledWith(expect.anything(), "user-1");
     expect(deps.deleteAccount).not.toHaveBeenCalled();
   });
 });

@@ -234,4 +234,21 @@ describe("Better Auth error contract", () => {
       error: { code: "TOO_MANY_ATTEMPTS", message: "Too many attempts. Try again later." },
     });
   });
+
+  it("preserves a valid lockout expiry without forwarding provider text", async () => {
+    const response = await normalize(429, {
+      code: "ACCOUNT_LOCKED",
+      message: "provider detail",
+      lockedUntil: "2026-09-01T12:00:00.000Z",
+    });
+
+    expect(response.status).toBe(429);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "TOO_MANY_ATTEMPTS",
+        message: "Too many attempts. Try again later.",
+        lockedUntil: "2026-09-01T12:00:00.000Z",
+      },
+    });
+  });
 });

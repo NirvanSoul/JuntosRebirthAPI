@@ -19,6 +19,7 @@ const ERROR_STATUS = {
   AVATAR_TOO_SMALL: 400,
   BOOTSTRAP_REQUIRED: 400,
   DELETE_CONFIRMATION_REQUIRED: 400,
+  DELETE_DATA_CONFIRMATION_REQUIRED: 400,
   UNAUTHORIZED: 401,
   EMAIL_NOT_VERIFIED: 403,
   INVALID_OTP: 400,
@@ -57,6 +58,7 @@ const DEFAULT_MESSAGES: Record<ErrorCode, string> = {
   AVATAR_TOO_SMALL: "Avatar is too small.",
   BOOTSTRAP_REQUIRED: "Run bootstrap first.",
   DELETE_CONFIRMATION_REQUIRED: "Confirm account deletion to continue.",
+  DELETE_DATA_CONFIRMATION_REQUIRED: "Confirm data deletion to continue.",
   UNAUTHORIZED: "Unauthorized.",
   EMAIL_NOT_VERIFIED: "Verify your email address to continue.",
   INVALID_OTP: "Invalid verification code.",
@@ -86,17 +88,32 @@ const DEFAULT_MESSAGES: Record<ErrorCode, string> = {
   VENEZUELA_RATES_UNAVAILABLE: "Venezuela rates are unavailable",
 };
 
-export function errorBody(code: ErrorCode, message?: string) {
-  return { error: { code, message: message ?? DEFAULT_MESSAGES[code] } };
+export function errorBody(
+  code: ErrorCode,
+  message?: string,
+  details?: Record<string, unknown>,
+) {
+  return {
+    error: {
+      code,
+      message: message ?? DEFAULT_MESSAGES[code],
+      ...details,
+    },
+  };
 }
 
 export function statusForErrorCode(code: ErrorCode): ContentfulStatusCode {
   return ERROR_STATUS[code];
 }
 
-export function errorResponse(c: Context, code: ErrorCode, message?: string) {
+export function errorResponse(
+  c: Context,
+  code: ErrorCode,
+  message?: string,
+  details?: Record<string, unknown>,
+) {
   return c.json(
-    errorBody(code, message),
+    errorBody(code, message, details),
     ERROR_STATUS[code],
   );
 }
