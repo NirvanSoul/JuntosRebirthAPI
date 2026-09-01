@@ -115,6 +115,9 @@ export function createAccountRoute(deps: Dependencies = defaults) {
   });
 
   route.delete("/me", async (c) => {
+    const confirmed = await parseDeleteConfirmation(c.req.raw);
+    if (!confirmed) return errorResponse(c, "DELETE_CONFIRMATION_REQUIRED");
+
     const userId = c.get("currentUserId");
     try {
       // El avatar vive fuera de PostgreSQL, así que no lo alcanza el cascade.
@@ -133,6 +136,15 @@ export function createAccountRoute(deps: Dependencies = defaults) {
 }
 
 export const accountRoute = createAccountRoute();
+
+/**
+ * Borrar una cuenta es irreversible. La app debe enviar esta frase exacta;
+ * una llamada DELETE accidental nunca elimina datos solo por tener sesión.
+ */
+async function parseDeleteConfirmation(request: Request): Promise<boolean> {
+  const body = await parseBody(request, ["confirmation"]);
+  return body?.confirmation === "DELETE_MY_ACCOUNT";
+}
 
 async function parseLegalAcceptance(request: Request) {
   const body = await parseBody(request, [

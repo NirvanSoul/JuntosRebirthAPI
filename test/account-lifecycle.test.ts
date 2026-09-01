@@ -33,6 +33,14 @@ function post(body: unknown) {
   };
 }
 
+function deleteAccount(confirmation?: string) {
+  return {
+    method: "DELETE",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(confirmation ? { confirmation } : {}),
+  };
+}
+
 describe("legal acceptances", () => {
   it("records an accepted document", async () => {
     const { app, deps, env } = appWith({});
@@ -136,7 +144,7 @@ describe("account export and deletion", () => {
       { AVATARS: {} as R2Bucket },
     );
 
-    const response = await app.request("/v1/me", { method: "DELETE" }, env);
+    const response = await app.request("/v1/me", deleteAccount("DELETE_MY_ACCOUNT"), env);
 
     expect(response.status).toBe(204);
     // El objeto de R2 no lo alcanza el ON DELETE CASCADE de PostgreSQL.
@@ -146,10 +154,27 @@ describe("account export and deletion", () => {
   it("still deletes the account when avatar storage is not configured", async () => {
     const { app, deps, env } = appWith({});
 
-    const response = await app.request("/v1/me", { method: "DELETE" }, env);
+    const response = await app.request("/v1/me", deleteAccount("DELETE_MY_ACCOUNT"), env);
 
     expect(response.status).toBe(204);
     expect(deps.deleteAvatar).not.toHaveBeenCalled();
     expect(deps.deleteAccount).toHaveBeenCalledWith(expect.anything(), "user-1");
+  });
+
+  it("never deletes an account without an explicit confirmation", async () => {
+    const { app, deps, env } = appWith({});
+
+    for (const confirmation of [undefined, "delete", "DELETE_MY_ACCOUNT_NOW"]) {
+      const response = await app.request("/v1/me", deleteAccount(confirmation), env);
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({
+        error: {
+          code: "DELETE_CONFIRMATION_REQUIRED",
+          message: "Confirm account deletion to continue.",
+        },
+      });
+    }
+    expect(deps.deleteAvatar).not.toHaveBeenCalled();
+    expect(deps.deleteAccount).not.toHaveBeenCalled();
   });
 });

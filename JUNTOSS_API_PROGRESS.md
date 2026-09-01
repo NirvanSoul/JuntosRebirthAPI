@@ -258,9 +258,10 @@ SQLite local.
 ### Borrar
 
 `DELETE /v1/me/avatar` devuelve `204` y limpia tanto el objeto de R2 como las
-columnas del perfil. `DELETE /v1/me` también elimina el objeto: el
-`ON DELETE CASCADE` de PostgreSQL no alcanza a R2, así que se borra explícitamente
-antes de la cuenta.
+columnas del perfil. El borrado completo de cuenta requiere el body explícito
+`{ "confirmation": "DELETE_MY_ACCOUNT" }`; así una llamada accidental no puede
+eliminar datos. `DELETE /v1/me` también elimina el objeto: el `ON DELETE CASCADE`
+de PostgreSQL no alcanza a R2, así que se borra explícitamente antes de la cuenta.
 
 ## Bugs encontrados por la suite de integración
 
