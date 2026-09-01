@@ -2,6 +2,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { bootstrapAccount, findCurrentUser } from "../../src/services/account";
 import { createSpaceWithOwner, listActiveSpaces } from "../../src/services/spaces";
+import { buildSnapshot } from "../../src/services/sync-snapshot";
 import { categories, spaces } from "../../src/db/schema";
 import { cleanupTestUsers, createTestUser, testDb } from "./harness";
 
@@ -39,20 +40,27 @@ describe("bootstrap against PostgreSQL", () => {
 });
 
 describe("space creation against PostgreSQL", () => {
-  it("seeds categories so a brand-new space can record a movement", async () => {
+  it("creates a space without categories, and none reach its snapshot", async () => {
     const userId = await createTestUser(db, "space");
     const space = await createSpaceWithOwner(db, userId, {
-      name: "Viaje",
-      type: "other",
+      name: "Juntos",
+      type: "couple",
       currency: "USD",
-      timezone: "UTC",
+      timezone: "Europe/Madrid",
     });
 
+    // Sembrar las plantillas aquí hacía que un espacio compartido recién
+    // creado llegara a la app con las 18 categorías ya marcadas como propias.
     const seeded = await db
       .select({ id: categories.id })
       .from(categories)
       .where(eq(categories.spaceId, space.id));
-    expect(seeded).toHaveLength(18);
+    expect(seeded).toHaveLength(0);
+
+    const snapshot = await buildSnapshot(db, userId);
+    expect(
+      snapshot.categories.filter((category) => category.spaceId === space.id),
+    ).toHaveLength(0);
   });
 
   it("leaves a couple space inactive until someone accepts", async () => {
