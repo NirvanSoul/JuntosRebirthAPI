@@ -1,7 +1,6 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { createDb, type Database } from "../db/client";
-import { categories, spaceMembers, spaces } from "../db/schema";
-import { defaultCategories } from "../constants/default-categories";
+import { spaceMembers, spaces } from "../db/schema";
 
 export type SpaceSummary = {
   id: string;
@@ -62,6 +61,12 @@ export async function createSpaceWithOwner(
   // cliente lo muestra como "esperando pareja" mientras `activatedAt` sea null.
   const activatedAt = input.type === "couple" ? null : now;
 
+  // Un espacio nuevo nace sin categorías. Sembrar aquí las 18 plantillas hacía
+  // que un espacio compartido recién creado apareciera en la app con el
+  // historial de categorías ya hecho, como si la persona lo hubiera armado.
+  // Las plantillas pertenecen al alta de la cuenta (`POST /v1/bootstrap`, que
+  // siembra el espacio personal); en el resto, las categorías las trae quien
+  // las crea desde la app o el primer `sync` del espacio.
   await db.batch([
     db.insert(spaces).values({
       id,
@@ -83,21 +88,6 @@ export async function createSpaceWithOwner(
       createdAt: now,
       updatedAt: now,
     }),
-    // Sin categorías el espacio es inutilizable: `categoryId` es obligatorio
-    // tanto en movimientos como en series recurrentes.
-    db.insert(categories).values(
-      defaultCategories.map((definition) => ({
-        spaceId: id,
-        name: definition.name,
-        icon: definition.icon,
-        colorToken: definition.colorToken,
-        createdBy: userId,
-        isDefault: true,
-        templateKey: definition.key,
-        createdAt: now,
-        updatedAt: now,
-      })),
-    ),
   ]);
 
   return {

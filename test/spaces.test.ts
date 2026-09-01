@@ -10,7 +10,6 @@ import {
   type SpaceSummary,
 } from "../src/services/spaces";
 import type { Database } from "../src/db/client";
-import { defaultCategories } from "../src/constants/default-categories";
 import type { Bindings } from "../src/types/env";
 
 const bindings: Bindings = {
@@ -198,7 +197,7 @@ describe("Spaces service", () => {
     });
 
     expect(batch).toHaveBeenCalledOnce();
-    expect(batch.mock.calls[0]?.[0]).toHaveLength(3);
+    expect(batch.mock.calls[0]?.[0]).toHaveLength(2);
     expect(insertedValues[0]).toMatchObject({
       id: created.id,
       createdBy: "user-1",
@@ -210,14 +209,10 @@ describe("Spaces service", () => {
       role: "owner",
       status: "active",
     });
-    // Sin categorías el espacio no admitiría ni un movimiento.
-    const seeded = insertedValues[2] as unknown as Array<Record<string, unknown>>;
-    expect(seeded).toHaveLength(defaultCategories.length);
-    expect(seeded[0]).toMatchObject({
-      spaceId: created.id,
-      isDefault: true,
-      templateKey: defaultCategories[0].key,
-    });
+    // Las plantillas son del alta de la cuenta. Sembrarlas aquí hacía que un
+    // espacio compartido recién creado llegara a la app con las 18 categorías
+    // marcadas como propias.
+    expect(insertedValues).toHaveLength(2);
     expect(created.activatedAt).toEqual(expect.any(Date));
   });
 
