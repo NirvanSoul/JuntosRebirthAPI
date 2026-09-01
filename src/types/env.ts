@@ -12,6 +12,6 @@ export type Bindings = {
   APP_URL?: string;
   /** R2 bucket backing user avatars; replaces the Supabase `avatars` bucket. */
   AVATARS?: R2Bucket;
-  /** Set only for local/development Workers to enable Expo's exp:// origins. */
+  /** Set only for local/development Workers to widen the browser CORS allowlist. */
   ENVIRONMENT?: "development" | "production";
 };

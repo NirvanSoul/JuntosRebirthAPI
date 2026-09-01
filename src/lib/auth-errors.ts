@@ -3,6 +3,10 @@ import { errorResponse, type ErrorCode } from "./http";
 
 const AUTH_ERROR_CODES: Record<string, ErrorCode> = {
   EMAIL_NOT_VERIFIED: "EMAIL_NOT_VERIFIED",
+  // Sin este par, un fallo de credenciales llegaba a la app como
+  // `UNAUTHORIZED` genérico y la pantalla no podía decir qué corregir.
+  INVALID_EMAIL_OR_PASSWORD: "INVALID_EMAIL_OR_PASSWORD",
+  INVALID_PASSWORD: "INVALID_EMAIL_OR_PASSWORD",
   INVALID_OTP: "INVALID_OTP",
   OTP_EXPIRED: "OTP_EXPIRED",
   TOO_MANY_ATTEMPTS: "TOO_MANY_ATTEMPTS",

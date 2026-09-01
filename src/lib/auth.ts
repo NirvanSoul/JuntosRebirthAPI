@@ -60,17 +60,21 @@ function buildAuth(env: Bindings) {
   }
 
   const db = createDb(env.DATABASE_URL);
-  // Cloudflare Workers does not provide NODE_ENV automatically. Deployments
-  // default to the restrictive production origin set unless explicitly marked
-  // as development through the ENVIRONMENT binding.
-  const isDevelopment = env.ENVIRONMENT === "development";
+  // El cliente de Expo manda su origen en `expo-origin` y el plugin lo copia a
+  // `Origin`. En Expo Go ese valor no es el esquema de la app sino
+  // `exp://<host>:<puerto>`, así que dejarlo fuera del listado devolvía `403`
+  // a todo registro e inicio de sesión lanzado con `expo start --go`.
+  // Confiar en él no debilita la barrera CSRF que este listado da a los flujos
+  // web: un navegador solo puede enviar un `Origin` http(s), nunca uno con un
+  // esquema propio, y una app nativa puede fabricar la cabecera de todos modos.
   const trustedOrigins = [
     ...(env.BETTER_AUTH_URL ? [env.BETTER_AUTH_URL] : []),
     "https://api.aoraestudio.com",
     "https://juntosapi.aora-estudio-o.workers.dev",
     "juntoss://",
     "juntoss://*",
-    ...(isDevelopment ? ["exp://", "exp://**"] : []),
+    "exp://",
+    "exp://**",
   ].filter((v, i, a) => a.indexOf(v) === i);
 
   const emailConfig = {

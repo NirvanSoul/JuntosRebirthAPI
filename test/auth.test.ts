@@ -92,23 +92,22 @@ describe("Better Auth Factory", () => {
       "https://api.aoraestudio.com",
       "juntoss://",
       "juntoss://*",
-    ]);
-  });
-
-  it("allows Expo development origins only for development Workers", () => {
-    const auth = createAuth({
-      ...mockEnv,
-      ENVIRONMENT: "development",
-    });
-
-    expect(auth.options.trustedOrigins).toEqual([
-      mockEnv.BETTER_AUTH_URL,
-      "https://api.aoraestudio.com",
-      "juntoss://",
-      "juntoss://*",
       "exp://",
       "exp://**",
     ]);
+  });
+
+  it("trusts the exp:// origin that Expo Go sends in production too", () => {
+    // Expo Go no puede usar el esquema `juntoss://`: su `expo-origin` es
+    // `exp://<host>:<puerto>` y sin él el registro respondía 403.
+    const auth = createAuth({
+      ...mockEnv,
+      ENVIRONMENT: "production",
+      BETTER_AUTH_URL: "https://api.aoraestudio.com",
+    });
+
+    expect(auth.options.trustedOrigins).toContain("exp://");
+    expect(auth.options.trustedOrigins).toContain("exp://**");
   });
 
   it("does not return PROVIDER_NOT_FOUND for Google social sign-in", async () => {
@@ -218,6 +217,21 @@ describe("Better Auth error contract", () => {
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({
       error: { code: "OTP_EXPIRED", message: "Verification code has expired." },
+    });
+  });
+
+  it("keeps a credential failure distinguishable from a missing session", async () => {
+    const response = await normalize(401, {
+      code: "INVALID_EMAIL_OR_PASSWORD",
+      message: "provider detail",
+    });
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "INVALID_EMAIL_OR_PASSWORD",
+        message: "Incorrect email or password.",
+      },
     });
   });
 
