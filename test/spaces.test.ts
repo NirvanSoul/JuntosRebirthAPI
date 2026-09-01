@@ -41,7 +41,9 @@ function createTestApp(options: {
   testApp.use(
     "/v1/*",
     createRequireAuth(async () =>
-      options.userId ? { userId: options.userId } : null,
+      options.userId
+        ? { userId: options.userId, emailVerified: true }
+        : null,
     ),
   );
   testApp.route(

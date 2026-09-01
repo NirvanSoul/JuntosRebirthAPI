@@ -46,7 +46,7 @@ export function createAccountRoute(deps: Dependencies = defaults) {
       const result = await deps.bootstrapAccount(db, currentUser, input.timezone);
       return c.json({ data: { user: currentUser, ...result } });
     } catch {
-      return errorResponse(c, "INTERNAL_ERROR");
+      return errorResponse(c, "INTERNAL_SERVER_ERROR");
     }
   });
 
@@ -65,7 +65,7 @@ export function createAccountRoute(deps: Dependencies = defaults) {
         },
       });
     } catch {
-      return errorResponse(c, "INTERNAL_ERROR");
+      return errorResponse(c, "INTERNAL_SERVER_ERROR");
     }
   });
 
@@ -81,7 +81,7 @@ export function createAccountRoute(deps: Dependencies = defaults) {
       if (!profile) return errorResponse(c, "PROFILE_NOT_FOUND");
       return c.json({ data: { profile } });
     } catch {
-      return errorResponse(c, "INTERNAL_ERROR");
+      return errorResponse(c, "INTERNAL_SERVER_ERROR");
     }
   });
 
@@ -97,7 +97,7 @@ export function createAccountRoute(deps: Dependencies = defaults) {
       );
       return c.json({ data: { acceptance } }, 201);
     } catch {
-      return errorResponse(c, "INTERNAL_ERROR");
+      return errorResponse(c, "INTERNAL_SERVER_ERROR");
     }
   });
 
@@ -110,7 +110,7 @@ export function createAccountRoute(deps: Dependencies = defaults) {
       return c.json({ data });
     } catch (error) {
       console.error("Account export failed:", error);
-      return errorResponse(c, "INTERNAL_ERROR");
+      return errorResponse(c, "INTERNAL_SERVER_ERROR");
     }
   });
 
@@ -125,7 +125,7 @@ export function createAccountRoute(deps: Dependencies = defaults) {
       return c.body(null, 204);
     } catch (error) {
       console.error("Account deletion failed:", error);
-      return errorResponse(c, "INTERNAL_ERROR");
+      return errorResponse(c, "INTERNAL_SERVER_ERROR");
     }
   });
 

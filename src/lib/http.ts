@@ -19,6 +19,12 @@ const ERROR_STATUS = {
   AVATAR_TOO_SMALL: 400,
   BOOTSTRAP_REQUIRED: 400,
   UNAUTHORIZED: 401,
+  EMAIL_NOT_VERIFIED: 403,
+  INVALID_OTP: 400,
+  OTP_EXPIRED: 400,
+  TOO_MANY_ATTEMPTS: 429,
+  USER_ALREADY_EXISTS: 409,
+  FAILED_TO_CREATE_USER: 500,
   FORBIDDEN: 403,
   MEMBER_ROLE_CHANGE_REJECTED: 403,
   MEMBER_REMOVAL_REJECTED: 403,
@@ -37,8 +43,7 @@ const ERROR_STATUS = {
   OWNER_MUST_TRANSFER: 409,
   COUPLE_SPACE_LIMIT: 409,
   INVITATION_ALREADY_PENDING: 409,
-  MIGRATION_IN_PROGRESS: 409,
-  INTERNAL_ERROR: 500,
+  INTERNAL_SERVER_ERROR: 500,
   VENEZUELA_RATES_UNAVAILABLE: 502,
 } as const satisfies Record<string, ContentfulStatusCode>;
 
@@ -51,6 +56,12 @@ const DEFAULT_MESSAGES: Record<ErrorCode, string> = {
   AVATAR_TOO_SMALL: "Avatar is too small.",
   BOOTSTRAP_REQUIRED: "Run bootstrap first.",
   UNAUTHORIZED: "Unauthorized.",
+  EMAIL_NOT_VERIFIED: "Verify your email address to continue.",
+  INVALID_OTP: "Invalid verification code.",
+  OTP_EXPIRED: "Verification code has expired.",
+  TOO_MANY_ATTEMPTS: "Too many attempts. Try again later.",
+  USER_ALREADY_EXISTS: "A user with this email already exists.",
+  FAILED_TO_CREATE_USER: "Failed to create user.",
   FORBIDDEN: "Forbidden.",
   MEMBER_ROLE_CHANGE_REJECTED: "Request cannot be completed.",
   MEMBER_REMOVAL_REJECTED: "Request cannot be completed.",
@@ -69,10 +80,13 @@ const DEFAULT_MESSAGES: Record<ErrorCode, string> = {
   OWNER_MUST_TRANSFER: "Transfer ownership before leaving.",
   COUPLE_SPACE_LIMIT: "You already have an active shared space.",
   INVITATION_ALREADY_PENDING: "There is already a pending invitation for this space.",
-  MIGRATION_IN_PROGRESS: "A migration is already in progress.",
-  INTERNAL_ERROR: "Internal error.",
+  INTERNAL_SERVER_ERROR: "Internal server error.",
   VENEZUELA_RATES_UNAVAILABLE: "Venezuela rates are unavailable",
 };
+
+export function errorBody(code: ErrorCode, message?: string) {
+  return { error: { code, message: message ?? DEFAULT_MESSAGES[code] } };
+}
 
 export function statusForErrorCode(code: ErrorCode): ContentfulStatusCode {
   return ERROR_STATUS[code];
@@ -80,7 +94,7 @@ export function statusForErrorCode(code: ErrorCode): ContentfulStatusCode {
 
 export function errorResponse(c: Context, code: ErrorCode, message?: string) {
   return c.json(
-    { error: { code, message: message ?? DEFAULT_MESSAGES[code] } },
+    errorBody(code, message),
     ERROR_STATUS[code],
   );
 }

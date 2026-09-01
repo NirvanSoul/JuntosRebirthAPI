@@ -42,7 +42,7 @@ export function createPushTokensRoute(deps: Deps = defaults) {
       return c.json({ data: { registered: true } }, 201);
     } catch (error) {
       console.error("Push token registration failed:", error);
-      return errorResponse(c, "INTERNAL_ERROR");
+      return errorResponse(c, "INTERNAL_SERVER_ERROR");
     }
   });
 
@@ -61,7 +61,7 @@ export function createPushTokensRoute(deps: Deps = defaults) {
       return c.body(null, 204);
     } catch (error) {
       console.error("Push token removal failed:", error);
-      return errorResponse(c, "INTERNAL_ERROR");
+      return errorResponse(c, "INTERNAL_SERVER_ERROR");
     }
   });
 

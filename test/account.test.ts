@@ -32,7 +32,7 @@ function createTestApp(userId = "user-1") {
     updateProfile: vi.fn().mockResolvedValue(profile),
   } as unknown as typeof account & { createDb: () => unknown };
   const testApp = new Hono<{ Bindings: Bindings; Variables: AuthVariables }>();
-  testApp.use("/v1/*", createRequireAuth(async () => (userId ? { userId } : null)));
+  testApp.use("/v1/*", createRequireAuth(async () => (userId ? { userId, emailVerified: true } : null)));
   testApp.route("/v1", createAccountRoute(deps as never));
   return { testApp, deps: deps as unknown as { bootstrapAccount: ReturnType<typeof vi.fn>; updateProfile: ReturnType<typeof vi.fn> } };
 }

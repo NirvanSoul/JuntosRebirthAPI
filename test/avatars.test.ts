@@ -36,7 +36,7 @@ function fakeBucket(stored?: { body: string; contentType?: string }) {
 
 function appWith(overrides: Parameters<typeof createAvatarsRoute>[0], env: Partial<Bindings>) {
   const app = new Hono<{ Bindings: Bindings; Variables: AuthVariables }>();
-  app.use("*", createRequireAuth(async () => ({ userId: "viewer-1" })));
+  app.use("*", createRequireAuth(async () => ({ userId: "viewer-1", emailVerified: true })));
   app.route("/v1", createAvatarsRoute(overrides));
   return { app, env: { DATABASE_URL: "postgres://x", ...env } as Bindings };
 }

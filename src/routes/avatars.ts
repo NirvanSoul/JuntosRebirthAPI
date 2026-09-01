@@ -57,7 +57,7 @@ export function createAvatarsRoute(deps: Deps = defaults) {
   const route = new Hono<Env>();
 
   route.put("/me/avatar", async (c) => {
-    if (!c.env.AVATARS) return errorResponse(c, "INTERNAL_ERROR", "Avatar storage is not configured.");
+    if (!c.env.AVATARS) return errorResponse(c, "INTERNAL_SERVER_ERROR", "Avatar storage is not configured.");
 
     const contentType = c.req.header("content-type")?.split(";")[0]?.trim();
     if (contentType !== AVATAR_CONTENT_TYPE) {
@@ -81,12 +81,12 @@ export function createAvatarsRoute(deps: Deps = defaults) {
       return c.json({ data: { avatar } });
     } catch (error) {
       console.error("Avatar upload failed:", error);
-      return errorResponse(c, "INTERNAL_ERROR");
+      return errorResponse(c, "INTERNAL_SERVER_ERROR");
     }
   });
 
   route.delete("/me/avatar", async (c) => {
-    if (!c.env.AVATARS) return errorResponse(c, "INTERNAL_ERROR", "Avatar storage is not configured.");
+    if (!c.env.AVATARS) return errorResponse(c, "INTERNAL_SERVER_ERROR", "Avatar storage is not configured.");
 
     try {
       await deps.deleteAvatar(
@@ -97,12 +97,12 @@ export function createAvatarsRoute(deps: Deps = defaults) {
       return c.body(null, 204);
     } catch (error) {
       console.error("Avatar delete failed:", error);
-      return errorResponse(c, "INTERNAL_ERROR");
+      return errorResponse(c, "INTERNAL_SERVER_ERROR");
     }
   });
 
   route.get("/avatars/:userId", async (c) => {
-    if (!c.env.AVATARS) return errorResponse(c, "INTERNAL_ERROR", "Avatar storage is not configured.");
+    if (!c.env.AVATARS) return errorResponse(c, "INTERNAL_SERVER_ERROR", "Avatar storage is not configured.");
 
     const ownerId = c.req.param("userId")!;
     try {
@@ -125,7 +125,7 @@ export function createAvatarsRoute(deps: Deps = defaults) {
       });
     } catch (error) {
       console.error("Avatar read failed:", error);
-      return errorResponse(c, "INTERNAL_ERROR");
+      return errorResponse(c, "INTERNAL_SERVER_ERROR");
     }
   });
 

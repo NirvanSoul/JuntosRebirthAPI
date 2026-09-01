@@ -97,6 +97,13 @@ export const verification = pgTable(
   (table) => [index("verification_identifier_idx").on(table.identifier)],
 );
 
+/** Contadores distribuidos de Better Auth para limitar OTP y autenticación. */
+export const rateLimit = pgTable("rate_limit", {
+  key: text("key").primaryKey(),
+  count: integer("count").notNull(),
+  lastRequest: bigint("last_request", { mode: "number" }).notNull(),
+});
+
 // Juntoss Enums
 export const spaceTypeEnum = pgEnum("space_type", [
   "personal",
@@ -173,12 +180,6 @@ export const merchantRuleSourceEnum = pgEnum("merchant_rule_source", [
 export const legalDocumentTypeEnum = pgEnum("legal_document_type", [
   "privacy-policy",
   "terms-of-service",
-]);
-
-export const guestMigrationStatusEnum = pgEnum("guest_migration_status", [
-  "processing",
-  "completed",
-  "failed",
 ]);
 
 export const moneyAccountKindEnum = pgEnum("money_account_kind", [
@@ -385,34 +386,6 @@ export const spaceInvitations = pgTable(
     // (space_id, lower(invited_email)) WHERE status = 'pending'. Drizzle no
     // sabe expresar `lower()` dentro de un índice, así que vive solo en el SQL.
   ],
-);
-
-export const guestMigrationBatches = pgTable(
-  "guest_migration_batches",
-  {
-    id: uuid("id").primaryKey(),
-    userId: text("user_id").notNull().references(() => user.id, { onDelete: "cascade" }),
-    installationId: text("installation_id").notNull(),
-    batchId: text("batch_id").notNull(),
-    status: guestMigrationStatusEnum("status").notNull(),
-    payloadHash: text("payload_hash").notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-    completedAt: timestamp("completed_at", { withTimezone: true }),
-  },
-  (table) => [uniqueIndex("guest_migration_batches_user_installation_batch_unique").on(table.userId, table.installationId, table.batchId)],
-);
-
-export const guestEntityLinks = pgTable(
-  "guest_entity_links",
-  {
-    userId: text("user_id").notNull(),
-    installationId: text("installation_id").notNull(),
-    entityType: text("entity_type").notNull(),
-    localId: text("local_id").notNull(),
-    remoteId: uuid("remote_id").notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-  },
-  (table) => [uniqueIndex("guest_entity_links_pk").on(table.userId, table.installationId, table.entityType, table.localId), index("guest_entity_links_remote_idx").on(table.remoteId)],
 );
 
 export const categories = pgTable(

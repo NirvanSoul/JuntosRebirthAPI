@@ -323,7 +323,6 @@ SQLite continuará existiendo en el dispositivo para:
 - datos pendientes de sincronización
 - caché
 - instalación local
-- migración guest -> usuario
 - preferencias estrictamente locales
 
 Arquitectura:
@@ -578,11 +577,7 @@ global_rule_candidates
 
 ---
 
-## Guest migration / sync
-
-```text
-guest_migration_batches
-```
+## Sync
 
 El sistema local ya contiene:
 
@@ -1108,13 +1103,12 @@ No implementar autenticación antes de comprobar que la conexión DB funciona co
 
 ---
 
-## Fase 7 — Sync / guest migration — completada
+## Fase 7 — Sync — completada
 
 Solo después de estabilizar el core remoto:
 
 - [x] analizar SQLite actual
 - [x] mapping local/remoto
-- [x] guest migration
 - [x] idempotencia
 - [x] resolución de duplicados
 - [x] reintentos

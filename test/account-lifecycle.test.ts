@@ -20,7 +20,7 @@ function appWith(overrides: Record<string, unknown>, env: Partial<Bindings> = {}
   } as unknown as NonNullable<Parameters<typeof createAccountRoute>[0]>;
 
   const app = new Hono<{ Bindings: Bindings; Variables: AuthVariables }>();
-  app.use("*", createRequireAuth(async () => ({ userId: "user-1" })));
+  app.use("*", createRequireAuth(async () => ({ userId: "user-1", emailVerified: true })));
   app.route("/v1", createAccountRoute(deps));
   return { app, deps, env: { DATABASE_URL: "postgres://x", ...env } as Bindings };
 }

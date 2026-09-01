@@ -45,7 +45,7 @@ export function createSpacesRoute(
 
       return c.json({ data: { spaces } });
     } catch {
-      return errorResponse(c, "INTERNAL_ERROR");
+      return errorResponse(c, "INTERNAL_SERVER_ERROR");
     }
   });
 
@@ -71,7 +71,7 @@ export function createSpacesRoute(
       if (isUniqueViolation(error, "spaces_one_active_couple_per_creator_idx")) {
         return errorResponse(c, "COUPLE_SPACE_LIMIT");
       }
-      return errorResponse(c, "INTERNAL_ERROR");
+      return errorResponse(c, "INTERNAL_SERVER_ERROR");
     }
   });
 

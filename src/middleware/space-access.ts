@@ -50,7 +50,7 @@ export function createRequireActiveSpaceMember(
       await next();
     } catch (error) {
       console.error("requireActiveSpaceMember failed:", error);
-      return errorResponse(c, "INTERNAL_ERROR", "Internal error.");
+      return errorResponse(c, "INTERNAL_SERVER_ERROR", "Internal error.");
     }
   });
 }

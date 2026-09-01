@@ -17,7 +17,7 @@ function appWith(overrides: Record<string, unknown> = {}) {
   } as unknown as NonNullable<Parameters<typeof createPushTokensRoute>[0]>;
 
   const app = new Hono<{ Bindings: Bindings; Variables: AuthVariables }>();
-  app.use("*", createRequireAuth(async () => ({ userId: "user-1" })));
+  app.use("*", createRequireAuth(async () => ({ userId: "user-1", emailVerified: true })));
   app.route("/v1/me/push-tokens", createPushTokensRoute(deps));
   return { app, deps, env: { DATABASE_URL: "postgres://x" } as Bindings };
 }

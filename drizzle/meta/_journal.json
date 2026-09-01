@@ -113,6 +113,20 @@
       "when": 1788307200000,
       "tag": "0015_invitation_uniqueness",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1788310800000,
+      "tag": "0016_remove_guest_migration",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1788314400000,
+      "tag": "0017_auth_rate_limit",
+      "breakpoints": true
     }
   ]
 }

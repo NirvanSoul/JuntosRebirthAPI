@@ -32,7 +32,7 @@ export function createMembersRoute(
       );
       return c.json({ data: { members } });
     } catch {
-      return errorResponse(c, "INTERNAL_ERROR");
+      return errorResponse(c, "INTERNAL_SERVER_ERROR");
     }
   });
 
@@ -53,7 +53,7 @@ export function createMembersRoute(
         ? c.json({ data: { updated: true } })
         : errorResponse(c, "MEMBER_ROLE_CHANGE_REJECTED");
     } catch {
-      return errorResponse(c, "INTERNAL_ERROR");
+      return errorResponse(c, "INTERNAL_SERVER_ERROR");
     }
   });
 
@@ -68,7 +68,7 @@ export function createMembersRoute(
         ? c.json({ data: { removed: true } })
         : errorResponse(c, "MEMBER_REMOVAL_REJECTED");
     } catch {
-      return errorResponse(c, "INTERNAL_ERROR");
+      return errorResponse(c, "INTERNAL_SERVER_ERROR");
     }
   });
 
@@ -82,7 +82,7 @@ export function createMembersRoute(
         ? c.json({ data: { left: true } })
         : errorResponse(c, "OWNER_MUST_TRANSFER");
     } catch {
-      return errorResponse(c, "INTERNAL_ERROR");
+      return errorResponse(c, "INTERNAL_SERVER_ERROR");
     }
   });
 

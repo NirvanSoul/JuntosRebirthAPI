@@ -40,7 +40,7 @@ export function createSnapshotRoute(
       return c.json({ data: snapshot });
     } catch (error) {
       console.error("Snapshot failed:", error);
-      return errorResponse(c, "INTERNAL_ERROR");
+      return errorResponse(c, "INTERNAL_SERVER_ERROR");
     }
   });
 
@@ -88,7 +88,7 @@ export function createSpaceSyncRoute(
       const reason = error instanceof Error ? error.message : "";
       const code = CLIENT_ERRORS[reason];
       if (!code) {
-        return errorResponse(c, "INTERNAL_ERROR");
+        return errorResponse(c, "INTERNAL_SERVER_ERROR");
       }
       return errorResponse(c, code);
     }

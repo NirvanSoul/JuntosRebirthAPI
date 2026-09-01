@@ -90,11 +90,25 @@ function buildAuth(env: Bindings) {
       // app es nativa y sus pantallas piden un código de 6 dígitos.
       requireEmailVerification: true,
     },
+    emailVerification: {
+      // El registro no crea sesión mientras el correo no esté confirmado.
+      // Tras un OTP válido sí se debe emitir una nueva sesión para que la app
+      // nativa pueda continuar directamente con bootstrap.
+      autoSignInAfterVerification: true,
+    },
+    // En Workers, la memoria pertenece a cada isolate. PostgreSQL mantiene el
+    // contador entre instancias y evita que se pueda eludir rotando isolate.
+    rateLimit: {
+      storage: "database",
+    },
     plugins: [
       expo(),
       emailOTP({
         otpLength: 6,
         expiresIn: 600,
+        // La tabla `verification` forma parte de PostgreSQL: nunca debe
+        // contener un código reutilizable en claro.
+        storeOTP: "hashed",
         sendVerificationOnSignUp: true,
         async sendVerificationOTP({ email, otp, type }) {
           if (type === "forget-password") {

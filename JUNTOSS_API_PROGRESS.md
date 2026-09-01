@@ -18,7 +18,6 @@ al plan maestro; registra decisiones y entregables verificables.
       restablecimiento, Google, y bloqueo por 9 intentos fallidos (`login_attempts`).
 - [x] Sincronización masiva: `GET /v1/sync/snapshot` y
       `POST /v1/spaces/:spaceId/sync`.
-- [x] Guest migration reescrito, con paridad de campos e idempotencia real.
 - [x] Perfil y avatares en R2.
 - [x] Legal, exportación de datos y borrado de cuenta.
 - [x] Notificaciones push (tokens de Expo y envío en invitaciones).
@@ -97,7 +96,6 @@ Leyenda: ✅ hecho · ➖ no aplica · ❌ pendiente
 | recurrences | ✅ | ✅ | ✅ | ✅ | ✅ mensual y custom |
 | rates | ✅ | ✅ | ✅ | ➖ | ✅ |
 | sync (snapshot + push) | ✅ | ✅ | ✅ | ✅ | ✅ snapshot |
-| guest migration | ✅ | ✅ | ✅ | ✅ | ❌ requiere la app |
 | R2 avatars | ✅ | ✅ | ✅ | ➖ | ✅ subida, descarga y borrado |
 | email (Resend) | ✅ | ✅ | ➖ | ➖ | ✅ entrega confirmada |
 | push | ✅ | ✅ | ✅ | ➖ | ❌ requiere dispositivo |

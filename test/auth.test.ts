@@ -1,8 +1,13 @@
 import { describe, it, expect, vi } from "vitest";
+import { Hono } from "hono";
 import { getTableConfig } from "drizzle-orm/pg-core";
 import app from "../src/index";
 import { createAuth } from "../src/lib/auth";
 import { account } from "../src/db/schema";
+import { rateLimit } from "../src/db/schema";
+import { createRequireAuth, type AuthVariables } from "../src/middleware/auth";
+import type { Bindings } from "../src/types/env";
+import { normalizeAuthErrorResponse } from "../src/lib/auth-errors";
 
 const mockEnv = {
   DATABASE_URL: "postgresql://user:pass@ep-test.neon.tech/neondb",
@@ -74,6 +79,10 @@ describe("Better Auth Factory", () => {
     // El registro debe confirmar el correo antes de dejar entrar, igual que
     // hacía la base anterior (`email_not_confirmed`).
     expect(auth.options.emailAndPassword?.requireEmailVerification).toBe(true);
+    expect(auth.options.emailVerification?.autoSignInAfterVerification).toBe(true);
+    expect(auth.options.rateLimit?.storage).toBe("database");
+    expect(rateLimit.key).toBeDefined();
+    expect(rateLimit.lastRequest).toBeDefined();
     expect(auth.options.trustedOrigins).toEqual([
       mockEnv.BETTER_AUTH_URL,
       "https://api.aoraestudio.com",
@@ -150,5 +159,75 @@ describe("Better Auth Routes in Hono", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toBeNull();
+  });
+});
+
+describe("Private API authorization", () => {
+  function protectedApp(emailVerified: boolean) {
+    const testApp = new Hono<{ Bindings: Bindings; Variables: AuthVariables }>();
+    testApp.use(
+      "/v1/*",
+      createRequireAuth(async () => ({ userId: "user-1", emailVerified })),
+    );
+    testApp.get("/v1/bootstrap", (c) => c.json({ userId: c.get("currentUserId") }));
+    return testApp;
+  }
+
+  it("rejects a valid provisional session until its email is verified", async () => {
+    const response = await protectedApp(false).request("/v1/bootstrap", {}, mockEnv);
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "EMAIL_NOT_VERIFIED",
+        message: "Verify your email address to continue.",
+      },
+    });
+  });
+
+  it("allows a verified session and derives the user from it", async () => {
+    const response = await protectedApp(true).request("/v1/bootstrap", {}, mockEnv);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ userId: "user-1" });
+  });
+});
+
+describe("Better Auth error contract", () => {
+  async function normalize(status: number, payload: unknown, headers?: HeadersInit) {
+    const testApp = new Hono();
+    testApp.get("/auth", (c) =>
+      normalizeAuthErrorResponse(
+        c,
+        new Response(JSON.stringify(payload), {
+          status,
+          headers: { "content-type": "application/json", ...headers },
+        }),
+      ),
+    );
+    return testApp.request("/auth");
+  }
+
+  it("normalizes OTP failures to the public error envelope", async () => {
+    const response = await normalize(400, { code: "OTP_EXPIRED", message: "provider detail" });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: { code: "OTP_EXPIRED", message: "Verification code has expired." },
+    });
+  });
+
+  it("normalizes rate limiting and preserves the retry time", async () => {
+    const response = await normalize(
+      429,
+      { message: "Too many requests." },
+      { "x-retry-after": "60" },
+    );
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe("60");
+    await expect(response.json()).resolves.toEqual({
+      error: { code: "TOO_MANY_ATTEMPTS", message: "Too many attempts. Try again later." },
+    });
   });
 });

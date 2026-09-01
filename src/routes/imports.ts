@@ -24,7 +24,7 @@ function fail(c: Parameters<typeof errorResponse>[0], error: unknown, context: s
   const code = CLIENT_ERRORS[reason];
   if (!code) {
     console.error(`${context} failed:`, reason);
-    return errorResponse(c, "INTERNAL_ERROR");
+    return errorResponse(c, "INTERNAL_SERVER_ERROR");
   }
   return errorResponse(c, code);
 }

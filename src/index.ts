@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { errorResponse } from "./lib/http";
+import { normalizeAuthErrorResponse } from "./lib/auth-errors";
 import { reportConfigOnce } from "./lib/config";
 import { healthRoute } from "./routes/health";
 import { ratesRoute } from "./routes/rates";
@@ -18,7 +19,6 @@ import { expireStaleInvitations } from "./services/invitations";
 import { accountRoute } from "./routes/account";
 import { createInvitationAcceptanceRoute, createInvitationPreviewRoute, createInvitationsRoute } from "./routes/invitations";
 import { createMembersRoute } from "./routes/members";
-import { guestMigrationRoute } from "./routes/guest-migration";
 import { createSnapshotRoute, createSpaceSyncRoute } from "./routes/sync";
 import { createAvatarsRoute } from "./routes/avatars";
 import { createPushTokensRoute } from "./routes/push-tokens";
@@ -56,7 +56,7 @@ app.use("*", (c, next) =>
 // no lleva el sobre `{ error: { code, message } }` que el cliente sabe leer.
 app.onError((error, c) => {
   console.error("Unhandled error:", error instanceof Error ? error.message : error);
-  return errorResponse(c, "INTERNAL_ERROR");
+  return errorResponse(c, "INTERNAL_SERVER_ERROR");
 });
 
 app.notFound((c) => errorResponse(c, "NOT_FOUND"));
@@ -65,26 +65,19 @@ app.notFound((c) => errorResponse(c, "NOT_FOUND"));
 // handler ya no lo alcanza.
 app.use("/health/config", requireAuth);
 app.route("/", healthRoute);
-app.route("/v1/rates", ratesRoute);
-app.use("/v1/spaces", requireAuth);
-app.use("/v1/spaces/*", requireAuth);
-app.use("/v1/bootstrap", requireAuth);
-app.use("/v1/me", requireAuth);
-app.use("/v1/me/*", requireAuth);
-app.use("/v1/sync/*", requireAuth);
-app.use("/v1/avatars/*", requireAuth);
-app.use("/v1/merchant-feedback", requireAuth);
-app.route("/v1", accountRoute);
-app.route("/v1", createAvatarsRoute());
-app.route("/v1/me/push-tokens", createPushTokensRoute());
-app.route("/v1", createImportsRoute());
-app.route("/v1/sync", guestMigrationRoute);
-app.route("/v1/sync", createSnapshotRoute());
 // El orden importa: la vista previa de una invitación es pública (se abre
 // desde el enlace del correo, sin sesión) y solo se libra de `requireAuth`
 // porque se registra antes. Mover esta línea por debajo la rompe en silencio.
 app.route("/v1/invitations", createInvitationPreviewRoute());
-app.use("/v1/invitations/*", requireAuth);
+app.route("/v1/rates", ratesRoute);
+// Toda ruta v1 restante es privada. Esta única barrera evita que un endpoint
+// nuevo quede expuesto por omitir un `app.use` específico.
+app.use("/v1/*", requireAuth);
+app.route("/v1", accountRoute);
+app.route("/v1", createAvatarsRoute());
+app.route("/v1/me/push-tokens", createPushTokensRoute());
+app.route("/v1", createImportsRoute());
+app.route("/v1/sync", createSnapshotRoute());
 app.route("/v1/invitations", createInvitationAcceptanceRoute());
 app.route("/v1/spaces/:spaceId/invitations", createInvitationsRoute());
 app.route("/v1/spaces/:spaceId/members", createMembersRoute());
@@ -98,9 +91,9 @@ app.route(
   recurringTransactionsRoute,
 );
 
-app.all("/api/auth/*", (c) => {
+app.all("/api/auth/*", async (c) => {
   const auth = createAuth(c.env);
-  return auth.handler(c.req.raw);
+  return normalizeAuthErrorResponse(c, await auth.handler(c.req.raw));
 });
 
 const worker = Object.assign(app, {

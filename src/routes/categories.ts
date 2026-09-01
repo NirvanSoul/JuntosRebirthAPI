@@ -66,7 +66,7 @@ export function createCategoriesRoute(
 
       return c.json({ data: { categories } });
     } catch {
-      return errorResponse(c, "INTERNAL_ERROR", "Internal error.");
+      return errorResponse(c, "INTERNAL_SERVER_ERROR", "Internal error.");
     }
   });
 
@@ -86,7 +86,7 @@ export function createCategoriesRoute(
 
       return c.json({ data: { category } }, 201);
     } catch {
-      return errorResponse(c, "INTERNAL_ERROR", "Internal error.");
+      return errorResponse(c, "INTERNAL_SERVER_ERROR", "Internal error.");
     }
   });
 
@@ -117,7 +117,7 @@ export function createCategoriesRoute(
       );
       return c.json({ data: { category: { ...category, budgets } } });
     } catch {
-      return errorResponse(c, "INTERNAL_ERROR", "Internal error.");
+      return errorResponse(c, "INTERNAL_SERVER_ERROR", "Internal error.");
     }
   });
 
@@ -148,7 +148,7 @@ export function createCategoriesRoute(
 
       return c.json({ data: { budget } });
     } catch {
-      return errorResponse(c, "INTERNAL_ERROR", "Internal error.");
+      return errorResponse(c, "INTERNAL_SERVER_ERROR", "Internal error.");
     }
   });
 
@@ -170,7 +170,7 @@ export function createCategoriesRoute(
       await dependencies.deleteCategoryBudget(db, category.id, currency);
       return c.body(null, 204);
     } catch {
-      return errorResponse(c, "INTERNAL_ERROR", "Internal error.");
+      return errorResponse(c, "INTERNAL_SERVER_ERROR", "Internal error.");
     }
   });
 
