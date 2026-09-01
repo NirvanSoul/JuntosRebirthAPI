@@ -81,6 +81,10 @@ describe("Better Auth Factory", () => {
     expect(auth.options.emailAndPassword?.requireEmailVerification).toBe(true);
     expect(auth.options.emailVerification?.autoSignInAfterVerification).toBe(true);
     expect(auth.options.rateLimit?.storage).toBe("database");
+    const otpPlugin = auth.options.plugins?.find((plugin) => plugin.id === "email-otp") as
+      | { options?: { rateLimit?: { max?: number; window?: number } } }
+      | undefined;
+    expect(otpPlugin?.options?.rateLimit).toEqual({ max: 3, window: 60 * 60 });
     expect(rateLimit.key).toBeDefined();
     expect(rateLimit.lastRequest).toBeDefined();
     expect(auth.options.trustedOrigins).toEqual([

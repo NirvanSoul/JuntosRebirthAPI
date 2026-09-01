@@ -16,9 +16,20 @@ import {
   normalizeEmail,
   registerFailedAttempt,
 } from "../services/login-attempts";
+import {
+  consumeOtpRequestLimit,
+  OTP_REQUEST_LIMIT,
+  OTP_REQUEST_WINDOW_SECONDS,
+} from "../services/otp-request-limits";
 import type { Bindings } from "../types/env";
 
 const SIGN_IN_EMAIL_PATH = "/sign-in/email";
+const OTP_REQUEST_PATHS = new Set([
+  "/sign-up/email",
+  "/email-otp/send-verification-otp",
+  "/email-otp/request-password-reset",
+  "/forget-password/email-otp",
+]);
 
 /**
  * Better Auth se configura una vez por isolate. Construirlo por request
@@ -109,6 +120,11 @@ function buildAuth(env: Bindings) {
         // La tabla `verification` forma parte de PostgreSQL: nunca debe
         // contener un código reutilizable en claro.
         storeOTP: "hashed",
+        // Complementa el límite por correo de abajo con una barrera por IP.
+        rateLimit: {
+          max: OTP_REQUEST_LIMIT,
+          window: OTP_REQUEST_WINDOW_SECONDS,
+        },
         sendVerificationOnSignUp: true,
         async sendVerificationOTP({ email, otp, type }) {
           if (type === "forget-password") {
@@ -131,6 +147,19 @@ function buildAuth(env: Bindings) {
     },
     hooks: {
       before: createAuthMiddleware(async (ctx) => {
+        if (OTP_REQUEST_PATHS.has(ctx.path)) {
+          const email = normalizeEmail(ctx.body?.email);
+          if (email) {
+            const allowed = await consumeOtpRequestLimit(db, email);
+            if (!allowed) {
+              throw new APIError("TOO_MANY_REQUESTS", {
+                code: "TOO_MANY_ATTEMPTS",
+                message: "Too many verification code requests. Try again later.",
+              });
+            }
+          }
+        }
+
         if (ctx.path !== SIGN_IN_EMAIL_PATH) return;
         const email = normalizeEmail(ctx.body?.email);
         if (!email) return;
