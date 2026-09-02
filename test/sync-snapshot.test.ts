@@ -4,7 +4,7 @@ import { buildSnapshot } from "../src/services/sync-snapshot";
 
 const NOW = new Date("2026-08-29T10:00:00.000Z");
 
-/** Devuelve las lecturas en el orden del servicio: espacios y luego las cinco colecciones. */
+/** Devuelve las lecturas en el orden del servicio: espacios, miembros y luego las cinco colecciones. */
 function fakeDatabase(reads: unknown[][]) {
   let call = 0;
   const db = {
@@ -14,6 +14,7 @@ function fakeDatabase(reads: unknown[][]) {
         const chain = {
           where: () => Promise.resolve(rows),
           innerJoin: () => chain,
+          leftJoin: () => chain,
         };
         return chain;
       },
@@ -28,6 +29,7 @@ describe("account snapshot", () => {
 
     expect(snapshot).toEqual({
       spaces: [],
+      members: [],
       categories: [],
       moneyAccounts: [],
       recurringSeries: [],
@@ -38,6 +40,7 @@ describe("account snapshot", () => {
   it("folds budgets and balances into their parent and serializes amounts as strings", async () => {
     const db = fakeDatabase([
       [{ id: "space-1", name: "Personal", type: "personal", currency: "EUR", timezone: "UTC", role: "owner", activatedAt: NOW, createdAt: NOW, updatedAt: NOW }],
+      [{ spaceId: "space-1", userId: "user-1", displayName: "Ana", image: null, avatarPath: "user-1/avatar.jpg", avatarUpdatedAt: NOW }],
       [{ id: "cat-1", spaceId: "space-1", name: "Ocio", icon: null, colorToken: null, isDefault: false, templateKey: null, isArchived: false, createdAt: NOW, updatedAt: NOW, archivedAt: null }],
       [{ categoryId: "cat-1", currency: "EUR", budgetAmountMinor: 25000n }],
       [{ id: "acc-1", spaceId: "space-1", name: "Revolut", kind: "bank", icon: null, colorToken: null, primaryCurrency: "EUR", isArchived: false, createdAt: NOW, updatedAt: NOW, archivedAt: null }],
@@ -50,6 +53,21 @@ describe("account snapshot", () => {
     ]);
 
     const snapshot = await buildSnapshot(db, "user-1");
+
+    // Regresión: los miembros de un espacio compartido viajan en el propio
+    // snapshot para que su avatar se refresque en el mismo ciclo de sync
+    // automático que el resto de datos, sin depender de una llamada aparte a
+    // GET /v1/spaces/:spaceId/members.
+    expect(snapshot.members).toEqual([
+      {
+        spaceId: "space-1",
+        userId: "user-1",
+        displayName: "Ana",
+        image: null,
+        avatarPath: "user-1/avatar.jpg",
+        avatarUpdatedAt: NOW,
+      },
+    ]);
 
     expect(snapshot.categories[0]?.budgets).toEqual([
       { currency: "EUR", budgetAmountMinor: "25000" },

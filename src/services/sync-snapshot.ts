@@ -10,6 +10,8 @@ import {
   spaceMembers,
   spaces,
   transactions,
+  user,
+  userProfiles,
 } from "../db/schema";
 
 /**
@@ -61,8 +63,18 @@ export type SnapshotMoneyAccount = {
   balances: { currency: string; openingBalanceMinor: string; displayOrder: number }[];
 };
 
+export type SnapshotMember = {
+  spaceId: string;
+  userId: string;
+  displayName: string;
+  image: string | null;
+  avatarPath: string | null;
+  avatarUpdatedAt: Date | null;
+};
+
 export type Snapshot = {
   spaces: SnapshotSpace[];
+  members: SnapshotMember[];
   categories: SnapshotCategory[];
   moneyAccounts: SnapshotMoneyAccount[];
   recurringSeries: Record<string, unknown>[];
@@ -71,6 +83,7 @@ export type Snapshot = {
 
 const EMPTY: Snapshot = {
   spaces: [],
+  members: [],
   categories: [],
   moneyAccounts: [],
   recurringSeries: [],
@@ -103,8 +116,21 @@ export async function buildSnapshot(db: Database, userId: string): Promise<Snaps
   const spaceIds = memberships.map((space) => space.id);
   if (spaceIds.length === 0) return { ...EMPTY };
 
-  const [categoryRows, budgetRows, accountRows, balanceRows, seriesRows, transactionRows] =
+  const [memberRows, categoryRows, budgetRows, accountRows, balanceRows, seriesRows, transactionRows] =
     await Promise.all([
+      db
+        .select({
+          spaceId: spaceMembers.spaceId,
+          userId: spaceMembers.userId,
+          displayName: userProfiles.displayName,
+          image: user.image,
+          avatarPath: userProfiles.avatarPath,
+          avatarUpdatedAt: userProfiles.avatarUpdatedAt,
+        })
+        .from(spaceMembers)
+        .innerJoin(user, eq(spaceMembers.userId, user.id))
+        .leftJoin(userProfiles, eq(userProfiles.userId, user.id))
+        .where(and(inArray(spaceMembers.spaceId, spaceIds), eq(spaceMembers.status, "active"))),
       db
         .select({
           id: categories.id,
@@ -228,6 +254,7 @@ export async function buildSnapshot(db: Database, userId: string): Promise<Snaps
 
   return {
     spaces: memberships,
+    members: memberRows.map((row) => ({ ...row, displayName: row.displayName ?? "Usuario" })),
     categories: categoryRows.map((category) => ({
       ...category,
       budgets: budgetsByCategory.get(category.id) ?? [],
