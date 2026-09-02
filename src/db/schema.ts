@@ -460,6 +460,59 @@ export const categoryBudgets = pgTable(
   ],
 );
 
+/**
+ * Alias durable de `(spaceId, sourceInstallationId, sourceLocalId)` hacia una
+ * categoría ya existente. Necesaria porque una categoría solo guarda un par
+ * instalación/id-local (el del último dispositivo que la escribió): cuando el
+ * sync fusiona la categoría "propia" de un segundo dispositivo en la fila que
+ * ya tenía el primero (por `templateKey`), el id local del segundo dispositivo
+ * no queda registrado en ningún sitio. Si ese dispositivo sincroniza después
+ * un movimiento que referencia esa categoría por su id local, sin volver a
+ * incluir la categoría en el mismo lote, el servidor no tiene forma de
+ * resolverlo — de ahí esta tabla, que registra el alias la primera vez que se
+ * ve y sigue funcionando en cualquier sync posterior.
+ */
+export const categoryAliases = pgTable(
+  "category_aliases",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    spaceId: uuid("space_id")
+      .notNull()
+      .references(() => spaces.id, { onDelete: "cascade" }),
+    sourceInstallationId: text("source_installation_id").notNull(),
+    sourceLocalId: text("source_local_id").notNull(),
+    categoryId: uuid("category_id")
+      .notNull()
+      .references(() => categories.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex("category_aliases_source_local_idx").on(
+      table.spaceId,
+      table.sourceInstallationId,
+      table.sourceLocalId,
+    ),
+    index("category_aliases_category_idx").on(table.categoryId),
+  ],
+);
+
+export const categoryAliasesRelations = relations(categoryAliases, ({ one }) => ({
+  space: one(spaces, {
+    fields: [categoryAliases.spaceId],
+    references: [spaces.id],
+  }),
+  category: one(categories, {
+    fields: [categoryAliases.categoryId],
+    references: [categories.id],
+  }),
+}));
+
 export const moneyAccounts = pgTable(
   "money_accounts",
   {

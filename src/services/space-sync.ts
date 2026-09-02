@@ -2,6 +2,7 @@ import { eq, sql } from "drizzle-orm";
 import type { Database } from "../db/client";
 import {
   categories,
+  categoryAliases,
   categoryBudgets,
   moneyAccountBalances,
   moneyAccounts,
@@ -129,8 +130,13 @@ export async function syncSpaceData(
     .limit(1);
   if (!space) throw new Error("SPACE_NOT_FOUND");
 
-  const [existingCategories, existingAccounts, existingSeries, existingTransactions] =
-    await Promise.all([
+  const [
+    existingCategories,
+    existingAccounts,
+    existingSeries,
+    existingTransactions,
+    existingCategoryAliases,
+  ] = await Promise.all([
       db
         .select({
           id: categories.id,
@@ -164,6 +170,14 @@ export async function syncSpaceData(
         })
         .from(transactions)
         .where(eq(transactions.spaceId, spaceId)),
+      db
+        .select({
+          sourceInstallationId: categoryAliases.sourceInstallationId,
+          sourceLocalId: categoryAliases.sourceLocalId,
+          categoryId: categoryAliases.categoryId,
+        })
+        .from(categoryAliases)
+        .where(eq(categoryAliases.spaceId, spaceId)),
     ]);
 
   const categoryIds = resolveCategoryIds(existingCategories, payload.categories, installationId);
@@ -173,7 +187,17 @@ export async function syncSpaceData(
 
   // Una referencia puede apuntar a una fila que ya vive en el servidor y que no
   // viaja en este lote: por eso el mapa se completa con lo ya existente.
-  const knownCategories = referenceMap(categoryIds, existingCategories);
+  //
+  // Las categorías, además, se completan con sus alias: cuando el sync fusiona
+  // la categoría local de un dispositivo en la fila que ya tenía otro (por
+  // `templateKey`), el id local del dispositivo fusionado deja de vivir en la
+  // fila de `categories` (que solo guarda un par instalación/id-local). Sin el
+  // alias, un movimiento de ese dispositivo que referencie esa categoría sin
+  // volver a incluirla en el mismo lote no se podría resolver.
+  const ownAliases = existingCategoryAliases.filter(
+    (alias) => alias.sourceInstallationId === installationId,
+  );
+  const knownCategories = referenceMap(categoryIds, existingCategories, ownAliases);
   const knownAccounts = referenceMap(accountIds, existingAccounts);
   const knownSeries = referenceMap(seriesIds, existingSeries);
 
@@ -246,6 +270,25 @@ export async function syncSpaceData(
           }),
       );
     }
+
+    // Registra de forma duradera que este dispositivo llama `localId` a `id`,
+    // aunque la fila de `categories` termine perteneciendo a otro dispositivo
+    // (fusión por `templateKey`). Así, un futuro movimiento que solo
+    // referencie esta categoría por su id local sigue resolviéndose aunque la
+    // categoría no viaje de nuevo en ese lote.
+    writes.push(
+      db
+        .insert(categoryAliases)
+        .values({ spaceId, sourceInstallationId: installationId, sourceLocalId: localId, categoryId: id })
+        .onConflictDoUpdate({
+          target: [
+            categoryAliases.spaceId,
+            categoryAliases.sourceInstallationId,
+            categoryAliases.sourceLocalId,
+          ],
+          set: { categoryId: sql`excluded.category_id`, updatedAt: sql`excluded.updated_at` },
+        }),
+    );
   }
 
   for (const row of payload.moneyAccounts) {
@@ -313,8 +356,7 @@ export async function syncSpaceData(
     const id = seriesIds.get(localId)!;
     const updatedAt = date(row.updatedAt, now);
     const isArchived = Boolean(row.isArchived);
-    const categoryId =
-      reference(knownCategories, row.categoryId) ?? existingCategories[0]?.id;
+    const categoryId = reference(knownCategories, row.categoryId);
     if (!categoryId) throw new Error("INVALID_GRAPH");
 
     const rawAmount = integer(row.amountMinor);
@@ -376,8 +418,7 @@ export async function syncSpaceData(
     const id = transactionIds.get(localId)!;
     const updatedAt = date(row.updatedAt, now);
     const isArchived = Boolean(row.isArchived);
-    const categoryId =
-      reference(knownCategories, row.categoryId) ?? existingCategories[0]?.id;
+    const categoryId = reference(knownCategories, row.categoryId);
     if (!categoryId) throw new Error("INVALID_GRAPH");
 
     const rawAmount = integer(row.amountMinor);
@@ -447,12 +488,19 @@ export async function syncSpaceData(
   };
 }
 
-function referenceMap(resolved: Map<string, string>, existing: ExistingCategory[]) {
+function referenceMap(
+  resolved: Map<string, string>,
+  existing: ExistingCategory[],
+  aliases: { sourceLocalId: string; categoryId: string }[] = [],
+) {
   const map = new Map(resolved);
   for (const row of existing) {
     if (row.sourceLocalId && !map.has(row.sourceLocalId)) map.set(row.sourceLocalId, row.id);
     if (row.templateKey && !map.has(row.templateKey)) map.set(row.templateKey, row.id);
     if (!map.has(row.id)) map.set(row.id, row.id);
+  }
+  for (const alias of aliases) {
+    if (!map.has(alias.sourceLocalId)) map.set(alias.sourceLocalId, alias.categoryId);
   }
   return map;
 }

@@ -10,13 +10,14 @@ type Captured = { table: string; op: "insert" | "delete"; values?: Record<string
 
 /**
  * Doble del driver. Las lecturas responden en el orden del servicio: espacio,
- * categorías, cuentas, series y movimientos ya existentes.
+ * categorías, cuentas, series, movimientos y alias de categoría ya existentes.
  */
 function fakeDatabase(existing: {
   categories?: unknown[];
   moneyAccounts?: unknown[];
   series?: unknown[];
   transactions?: unknown[];
+  categoryAliases?: unknown[];
 } = {}) {
   const captured: Captured[] = [];
   const batch = vi.fn().mockResolvedValue([]);
@@ -28,6 +29,7 @@ function fakeDatabase(existing: {
     existing.moneyAccounts ?? [],
     existing.series ?? [],
     existing.transactions ?? [],
+    existing.categoryAliases ?? [],
   ];
 
   const db = {
@@ -329,6 +331,107 @@ describe("space bulk sync", () => {
         }),
       ),
     ).rejects.toThrow("INVALID_GRAPH");
+  });
+
+  it("rejects a transaction whose category cannot be resolved even when other categories already exist", async () => {
+    // Regresión: un couple space con categorías existentes no debe hacer
+    // fallback silencioso a "la primera categoría del espacio" cuando el
+    // categoryId del movimiento no se puede resolver — debe rechazar el lote.
+    const { db } = fakeDatabase({
+      categories: [
+        {
+          id: "99999999-9999-4999-8999-999999999999",
+          sourceInstallationId: "install-1",
+          sourceLocalId: "22222222-2222-4222-8222-222222222222",
+          templateKey: null,
+        },
+      ],
+    });
+
+    await expect(
+      syncSpaceData(
+        db,
+        SPACE,
+        "user-1",
+        payload({
+          transactions: [
+            {
+              id: "44444444-4444-4444-8444-444444444444",
+              categoryId: "ghost",
+              moneyAccountId: null,
+              type: "expense",
+              amountMinor: 500,
+              currency: "EUR",
+              title: "Pan",
+              occurredOn: "2026-08-20",
+              isArchived: false,
+              createdAt: NOW,
+              updatedAt: NOW,
+            },
+          ],
+        }),
+      ),
+    ).rejects.toThrow("INVALID_GRAPH");
+  });
+
+  it("resolves a transaction's category through a previously recorded alias, without the category traveling in this batch", async () => {
+    // Un segundo dispositivo del couple space fusionó su categoría local
+    // "Transporte" (id local Z) en la fila ya existente de "Transporte" en un
+    // sync anterior; ese sync dejó grabado el alias Z -> id-servidor. Ahora
+    // ese mismo dispositivo sube un movimiento que solo referencia Z, sin
+    // volver a enviar la categoría: debe seguir resolviéndose a la categoría
+    // correcta en vez de caer en cualquier fallback.
+    const { db, captured } = fakeDatabase({
+      categories: [
+        {
+          id: "99999999-9999-4999-8999-999999999999",
+          sourceInstallationId: "install-1",
+          sourceLocalId: "server-local-transporte",
+          templateKey: "transport",
+        },
+        {
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          sourceInstallationId: "install-1",
+          sourceLocalId: "server-local-supermercado",
+          templateKey: "groceries",
+        },
+      ],
+      categoryAliases: [
+        {
+          sourceInstallationId: "install-2",
+          sourceLocalId: "device-2-local-transporte",
+          categoryId: "99999999-9999-4999-8999-999999999999",
+        },
+      ],
+    });
+
+    await syncSpaceData(
+      db,
+      SPACE,
+      "user-1",
+      payload({
+        installationId: "install-2",
+        transactions: [
+          {
+            id: "44444444-4444-4444-8444-444444444444",
+            categoryId: "device-2-local-transporte",
+            moneyAccountId: null,
+            type: "expense",
+            amountMinor: 500,
+            currency: "EUR",
+            title: "Taxi",
+            occurredOn: "2026-08-20",
+            isArchived: false,
+            createdAt: NOW,
+            updatedAt: NOW,
+          },
+        ],
+      }),
+    );
+
+    expect(rowsFor(captured, "transactions")[0]?.values).toMatchObject({
+      categoryId: "99999999-9999-4999-8999-999999999999",
+    });
   });
 
   it("writes everything in a single atomic batch", async () => {
