@@ -54,6 +54,14 @@ al plan maestro; registra decisiones y entregables verificables.
   como `member` y debe poder gestionar el dinero compartido.
 - El país para la inteligencia de comercios se deriva de la región del locale del
   perfil; el cliente no lo envía.
+- `PATCH /v1/me/profile` y `GET /v1/me` incluyen `countryCode` (ISO 3166-1
+  alfa-2, validado contra una whitelist fija en `src/lib/country.ts` — a
+  diferencia de `defaultCurrency`, que usa `Intl.supportedValuesOf("currency")`,
+  no existe una key `"region"` en `Intl.supportedValuesOf`). Es un ajuste de
+  identidad independiente de
+  `defaultCurrency` — cambiar uno no toca el otro — y, a diferencia de
+  `defaultCurrency`, no se expone en `listMembers`: no viaja a otros miembros
+  del space.
 
 ---
 

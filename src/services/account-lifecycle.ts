@@ -35,6 +35,7 @@ export type AccountExport = Snapshot & {
     displayName: string | null;
     locale: string | null;
     defaultCurrency: string | null;
+    countryCode: string | null;
     avatarPath: string | null;
     createdAt: Date | null;
   } | null;
@@ -58,6 +59,7 @@ export async function exportAccount(db: Database, userId: string): Promise<Accou
         displayName: userProfiles.displayName,
         locale: userProfiles.locale,
         defaultCurrency: userProfiles.defaultCurrency,
+        countryCode: userProfiles.countryCode,
         avatarPath: userProfiles.avatarPath,
         createdAt: userProfiles.createdAt,
       })

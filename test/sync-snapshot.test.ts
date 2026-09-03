@@ -41,15 +41,15 @@ describe("account snapshot", () => {
     const db = fakeDatabase([
       [{ id: "space-1", name: "Personal", type: "personal", currency: "EUR", timezone: "UTC", role: "owner", activatedAt: NOW, createdAt: NOW, updatedAt: NOW }],
       [{ spaceId: "space-1", userId: "user-1", displayName: "Ana", image: null, avatarPath: "user-1/avatar.jpg", avatarUpdatedAt: NOW }],
-      [{ id: "cat-1", spaceId: "space-1", name: "Ocio", icon: null, colorToken: null, isDefault: false, templateKey: null, isArchived: false, createdAt: NOW, updatedAt: NOW, archivedAt: null }],
+      [{ id: "cat-1", spaceId: "space-1", name: "Ocio", icon: null, colorToken: null, createdBy: "user-author-cat", isDefault: false, templateKey: null, isArchived: false, createdAt: NOW, updatedAt: NOW, archivedAt: null }],
       [{ categoryId: "cat-1", currency: "EUR", budgetAmountMinor: 25000n }],
-      [{ id: "acc-1", spaceId: "space-1", name: "Revolut", kind: "bank", icon: null, colorToken: null, primaryCurrency: "EUR", isArchived: false, createdAt: NOW, updatedAt: NOW, archivedAt: null }],
+      [{ id: "acc-1", spaceId: "space-1", name: "Revolut", kind: "bank", icon: null, colorToken: null, primaryCurrency: "EUR", createdBy: "user-author-acc", isArchived: false, createdAt: NOW, updatedAt: NOW, archivedAt: null }],
       [
         { moneyAccountId: "acc-1", currency: "USD", openingBalanceMinor: -2500n, displayOrder: 1 },
         { moneyAccountId: "acc-1", currency: "EUR", openingBalanceMinor: 100000n, displayOrder: 0 },
       ],
-      [{ id: "ser-1", spaceId: "space-1", amountMinor: 900n }],
-      [{ id: "tx-1", spaceId: "space-1", amountMinor: 1250n, note: "Con Ana", recurrence: "custom", recurrenceGroupId: "group-9" }],
+      [{ id: "ser-1", spaceId: "space-1", amountMinor: 900n, createdBy: "user-author-ser" }],
+      [{ id: "tx-1", spaceId: "space-1", amountMinor: 1250n, note: "Con Ana", createdBy: "user-author-tx", recurrence: "custom", recurrenceGroupId: "group-9" }],
     ]);
 
     const snapshot = await buildSnapshot(db, "user-1");
@@ -72,17 +72,21 @@ describe("account snapshot", () => {
     expect(snapshot.categories[0]?.budgets).toEqual([
       { currency: "EUR", budgetAmountMinor: "25000" },
     ]);
+    expect(snapshot.categories[0]?.createdBy).toBe("user-author-cat");
     // El cliente pinta las divisas en el orden que fijó la persona.
     expect(snapshot.moneyAccounts[0]?.balances.map((balance) => balance.currency)).toEqual([
       "EUR",
       "USD",
     ]);
     expect(snapshot.moneyAccounts[0]?.balances[1]?.openingBalanceMinor).toBe("-2500");
+    expect(snapshot.moneyAccounts[0]?.createdBy).toBe("user-author-acc");
     expect(snapshot.recurringSeries[0]?.amountMinor).toBe("900");
+    expect(snapshot.recurringSeries[0]?.createdBy).toBe("user-author-ser");
     // Los campos de paridad del ledger tienen que llegar al restaurar.
     expect(snapshot.transactions[0]).toMatchObject({
       amountMinor: "1250",
       note: "Con Ana",
+      createdBy: "user-author-tx",
       recurrence: "custom",
       recurrenceGroupId: "group-9",
     });

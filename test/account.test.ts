@@ -15,7 +15,7 @@ const bindings: Bindings = {
 };
 
 const currentUser = { id: "user-1", name: "Ada", email: "ada@example.com", image: null };
-const profile = { displayName: "Ada", locale: "es", defaultCurrency: "EUR", avatarPath: null };
+const profile = { displayName: "Ada", locale: "es", defaultCurrency: "EUR", countryCode: null, avatarPath: null };
 const personalSpace = { id: "space-1", name: "Personal", type: "personal" as const, currency: "EUR", timezone: "Europe/Madrid", role: "owner" as const };
 
 function createTestApp(userId = "user-1") {
@@ -41,6 +41,31 @@ describe("Account routes", () => {
   it("requires a session for bootstrap and me", async () => {
     expect((await app.request("/v1/bootstrap", { method: "POST" })).status).toBe(401);
     expect((await app.request("/v1/me")).status).toBe(401);
+  });
+
+  it("GET /v1/me/capabilities derives features from countryCode", async () => {
+    const { testApp } = createTestApp();
+    const response = await testApp.request("/v1/me/capabilities", {}, bindings);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      data: { countryCode: null, features: { venezuelaCurrencyMode: false, customExchangeRate: false, multiRateMovementDisplay: false } },
+    });
+  });
+
+  it("GET /v1/me/capabilities turns on Venezuela mode for countryCode VE", async () => {
+    const deps = {
+      createDb: vi.fn(() => ({})),
+      findCurrentUser: vi.fn().mockResolvedValue(currentUser),
+      getAccountState: vi.fn().mockResolvedValue({ profile: { ...profile, countryCode: "VE" }, personalSpaceId: "space-1" }),
+    } as unknown as typeof account & { createDb: () => unknown };
+    const testApp = new Hono<{ Bindings: Bindings; Variables: AuthVariables }>();
+    testApp.use("/v1/*", createRequireAuth(async () => ({ userId: "user-1", emailVerified: true })));
+    testApp.route("/v1", createAccountRoute(deps as never));
+
+    const response = await testApp.request("/v1/me/capabilities", {}, bindings);
+    await expect(response.json()).resolves.toEqual({
+      data: { countryCode: "VE", features: { venezuelaCurrencyMode: true, customExchangeRate: true, multiRateMovementDisplay: true } },
+    });
   });
 
   it("bootstraps only the authenticated user and accepts an initial IANA timezone", async () => {
@@ -86,5 +111,19 @@ describe("Account routes", () => {
     const valid = await testApp.request("/v1/me/profile", { method: "PATCH", body: JSON.stringify({ displayName: " Ada Lovelace ", defaultCurrency: "usd" }) }, bindings);
     expect(valid.status).toBe(200);
     expect(deps.updateProfile).toHaveBeenCalledWith(expect.anything(), "user-1", { displayName: "Ada Lovelace", defaultCurrency: "USD" });
+  });
+
+  it("rejects an unsupported countryCode", async () => {
+    const { testApp, deps } = createTestApp();
+    const response = await testApp.request("/v1/me/profile", { method: "PATCH", body: JSON.stringify({ countryCode: "XX-INVALID" }) }, bindings);
+    expect(response.status).toBe(400);
+    expect(deps.updateProfile).not.toHaveBeenCalled();
+  });
+
+  it("normalizes and saves a valid countryCode independently of currency", async () => {
+    const { testApp, deps } = createTestApp();
+    const response = await testApp.request("/v1/me/profile", { method: "PATCH", body: JSON.stringify({ countryCode: "ve" }) }, bindings);
+    expect(response.status).toBe(200);
+    expect(deps.updateProfile).toHaveBeenCalledWith(expect.anything(), "user-1", { countryCode: "VE" });
   });
 });

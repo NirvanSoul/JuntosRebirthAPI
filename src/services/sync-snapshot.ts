@@ -39,6 +39,7 @@ export type SnapshotCategory = {
   name: string;
   icon: string | null;
   colorToken: string | null;
+  createdBy: string | null;
   isDefault: boolean;
   templateKey: string | null;
   isArchived: boolean;
@@ -56,6 +57,7 @@ export type SnapshotMoneyAccount = {
   icon: string | null;
   colorToken: string | null;
   primaryCurrency: string;
+  createdBy: string | null;
   isArchived: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -138,6 +140,7 @@ export async function buildSnapshot(db: Database, userId: string): Promise<Snaps
           name: categories.name,
           icon: categories.icon,
           colorToken: categories.colorToken,
+          createdBy: categories.createdBy,
           isDefault: categories.isDefault,
           templateKey: categories.templateKey,
           isArchived: categories.isArchived,
@@ -165,6 +168,7 @@ export async function buildSnapshot(db: Database, userId: string): Promise<Snaps
           icon: moneyAccounts.icon,
           colorToken: moneyAccounts.colorToken,
           primaryCurrency: moneyAccounts.primaryCurrency,
+          createdBy: moneyAccounts.createdBy,
           isArchived: moneyAccounts.isArchived,
           createdAt: moneyAccounts.createdAt,
           updatedAt: moneyAccounts.updatedAt,
@@ -196,6 +200,7 @@ export async function buildSnapshot(db: Database, userId: string): Promise<Snaps
           startsOn: recurringTransactionSeries.startsOn,
           nextOccurrenceOn: recurringTransactionSeries.nextOccurrenceOn,
           generatedOccurrences: recurringTransactionSeries.generatedOccurrences,
+          createdBy: recurringTransactionSeries.createdBy,
           isArchived: recurringTransactionSeries.isArchived,
           createdAt: recurringTransactionSeries.createdAt,
           updatedAt: recurringTransactionSeries.updatedAt,
@@ -215,6 +220,7 @@ export async function buildSnapshot(db: Database, userId: string): Promise<Snaps
           title: transactions.title,
           occurredOn: transactions.occurredOn,
           note: transactions.note,
+          createdBy: transactions.createdBy,
           recurrence: transactions.recurrence,
           recurrenceGroupId: transactions.recurrenceGroupId,
           recurrenceSeriesId: transactions.recurrenceSeriesId,

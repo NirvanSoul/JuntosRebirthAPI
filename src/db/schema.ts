@@ -284,6 +284,7 @@ export const userProfiles = pgTable("user_profiles", {
   avatarUpdatedAt: timestamp("avatar_updated_at", { withTimezone: true }),
   locale: text("locale").default("es").notNull(),
   defaultCurrency: text("default_currency").default("EUR").notNull(),
+  countryCode: text("country_code"),
   personalSpaceId: uuid("personal_space_id").references(() => spaces.id, {
     onDelete: "set null",
   }),
@@ -770,6 +771,39 @@ export const exchangeRateSnapshots = pgTable(
   ],
 );
 
+/**
+ * Tasa personalizada de un usuario para el modo Venezuela. Fijamos
+ * `baseCurrency`/`quoteCurrency` a "USD"/"VES" a nivel de servicio (no como
+ * constraint SQL) porque el puente de conversión VES↔USD↔EUR de
+ * `MoneyConversionService` asume esa dirección para cualquier tasa CUSTOM.
+ */
+export const customExchangeRates = pgTable(
+  "custom_exchange_rates",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    countryCode: varchar("country_code", { length: 2 }).notNull(),
+    name: text("name").notNull(),
+    baseCurrency: varchar("base_currency", { length: 3 }).notNull(),
+    quoteCurrency: varchar("quote_currency", { length: 3 }).notNull(),
+    rate: numeric("rate", { precision: 24, scale: 10 }).notNull(),
+    isDefault: boolean("is_default").default(false).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull(),
+  },
+  (table) => [
+    check("custom_exchange_rates_rate_positive", sql`${table.rate} > 0`),
+    index("custom_exchange_rates_user_idx").on(table.userId),
+  ],
+);
+
 export const transactionReferenceRates = pgTable(
   "transaction_reference_rates",
   {
@@ -786,6 +820,12 @@ export const transactionReferenceRates = pgTable(
     rateSnapshotId: uuid("rate_snapshot_id").references(
       () => exchangeRateSnapshots.id,
     ),
+    // Solo poblado en la fila `rateSource = "CUSTOM"`: qué tasa personalizada
+    // del usuario se congeló en el momento de crear el movimiento.
+    customRateId: uuid("custom_rate_id").references(
+      () => customExchangeRates.id,
+      { onDelete: "set null" },
+    ),
     observedAt: timestamp("observed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
@@ -801,8 +841,12 @@ export const transactionReferenceRates = pgTable(
       "transaction_reference_rates_converted_amount_nonnegative",
       sql`${table.convertedAmountMinor} >= 0`,
     ),
-    uniqueIndex("transaction_reference_rates_transaction_idx").on(
+    // Un movimiento puede tener varias filas congeladas simultáneamente (BCV,
+    // EURO, CUSTOM), una por fuente — a diferencia del índice previo que solo
+    // admitía una tasa de referencia por movimiento.
+    uniqueIndex("transaction_reference_rates_transaction_source_idx").on(
       table.transactionId,
+      table.rateSource,
     ),
   ],
 );
@@ -998,6 +1042,21 @@ export const transactionReferenceRatesRelations = relations(
       fields: [transactionReferenceRates.rateSnapshotId],
       references: [exchangeRateSnapshots.id],
     }),
+    customRate: one(customExchangeRates, {
+      fields: [transactionReferenceRates.customRateId],
+      references: [customExchangeRates.id],
+    }),
+  }),
+);
+
+export const customExchangeRatesRelations = relations(
+  customExchangeRates,
+  ({ one, many }) => ({
+    user: one(user, {
+      fields: [customExchangeRates.userId],
+      references: [user.id],
+    }),
+    transactionReferenceRates: many(transactionReferenceRates),
   }),
 );
 

@@ -476,4 +476,104 @@ describe("space bulk sync", () => {
       archivedAt: new Date(NOW),
     });
   });
+
+  it("preserves row.createdBy across categories, money accounts, series, and transactions", async () => {
+    const { db, captured } = fakeDatabase();
+
+    await syncSpaceData(
+      db,
+      SPACE,
+      "syncing-user",
+      payload({
+        categories: [category({ createdBy: "author-user-cat" })],
+        moneyAccounts: [
+          {
+            id: "33333333-3333-4333-8333-333333333333",
+            remoteId: "33333333-3333-4333-8333-333333333333",
+            name: "Efectivo",
+            kind: "cash",
+            icon: "cash",
+            colorToken: "green",
+            currency: "EUR",
+            createdBy: "author-user-acc",
+            isArchived: false,
+            createdAt: NOW,
+            updatedAt: NOW,
+          },
+        ],
+        recurringSeries: [
+          {
+            id: "55555555-5555-4555-8555-555555555555",
+            remoteId: "55555555-5555-4555-8555-555555555555",
+            categoryId: "22222222-2222-4222-8222-222222222222",
+            moneyAccountId: null,
+            type: "expense",
+            amountMinor: 5000,
+            currency: "EUR",
+            title: "Gimnasio",
+            frequency: "monthly",
+            startsOn: "2026-09-01",
+            createdBy: "author-user-ser",
+            isArchived: false,
+            createdAt: NOW,
+            updatedAt: NOW,
+          },
+        ],
+        transactions: [
+          {
+            id: "44444444-4444-4444-8444-444444444444",
+            remoteId: "44444444-4444-4444-8444-444444444444",
+            categoryId: "22222222-2222-4222-8222-222222222222",
+            moneyAccountId: null,
+            type: "expense",
+            amountMinor: 1250,
+            currency: "EUR",
+            title: "Café",
+            occurredOn: "2026-08-20",
+            createdBy: "author-user-tx",
+            isArchived: false,
+            createdAt: NOW,
+            updatedAt: NOW,
+          },
+        ],
+      }),
+    );
+
+    expect(rowsFor(captured, "categories")[0]?.values?.createdBy).toBe("author-user-cat");
+    expect(rowsFor(captured, "money_accounts")[0]?.values?.createdBy).toBe("author-user-acc");
+    expect(rowsFor(captured, "recurring_transaction_series")[0]?.values?.createdBy).toBe("author-user-ser");
+    expect(rowsFor(captured, "transactions")[0]?.values?.createdBy).toBe("author-user-tx");
+  });
+
+  it("falls back to the syncing userId when row.createdBy is absent", async () => {
+    const { db, captured } = fakeDatabase();
+
+    await syncSpaceData(
+      db,
+      SPACE,
+      "syncing-user",
+      payload({
+        categories: [category()],
+        transactions: [
+          {
+            id: "44444444-4444-4444-8444-444444444444",
+            remoteId: "44444444-4444-4444-8444-444444444444",
+            categoryId: "22222222-2222-4222-8222-222222222222",
+            moneyAccountId: null,
+            type: "expense",
+            amountMinor: 1250,
+            currency: "EUR",
+            title: "Café",
+            occurredOn: "2026-08-20",
+            isArchived: false,
+            createdAt: NOW,
+            updatedAt: NOW,
+          },
+        ],
+      }),
+    );
+
+    expect(rowsFor(captured, "categories")[0]?.values?.createdBy).toBe("syncing-user");
+    expect(rowsFor(captured, "transactions")[0]?.values?.createdBy).toBe("syncing-user");
+  });
 });

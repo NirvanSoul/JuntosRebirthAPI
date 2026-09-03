@@ -15,6 +15,7 @@ export type Profile = {
   displayName: string;
   locale: string;
   defaultCurrency: string;
+  countryCode: string | null;
   avatarPath: string | null;
 };
 
@@ -114,6 +115,7 @@ export async function getAccountState(db: Database, userId: string) {
       displayName: userProfiles.displayName,
       locale: userProfiles.locale,
       defaultCurrency: userProfiles.defaultCurrency,
+      countryCode: userProfiles.countryCode,
       avatarPath: userProfiles.avatarPath,
       personalSpaceId: userProfiles.personalSpaceId,
     })
@@ -126,6 +128,7 @@ export async function getAccountState(db: Database, userId: string) {
           displayName: profile.displayName,
           locale: profile.locale,
           defaultCurrency: profile.defaultCurrency,
+          countryCode: profile.countryCode,
           avatarPath: profile.avatarPath,
         }
       : null,
@@ -133,10 +136,18 @@ export async function getAccountState(db: Database, userId: string) {
   };
 }
 
+export async function findUserCountryCode(db: Database, userId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ countryCode: userProfiles.countryCode })
+    .from(userProfiles)
+    .where(eq(userProfiles.userId, userId));
+  return row?.countryCode ?? null;
+}
+
 export async function updateProfile(
   db: Database,
   userId: string,
-  input: Partial<Pick<Profile, "displayName" | "locale" | "defaultCurrency">>,
+  input: Partial<Pick<Profile, "displayName" | "locale" | "defaultCurrency" | "countryCode">>,
 ): Promise<Profile | null> {
   const [profile] = await db
     .update(userProfiles)
@@ -146,6 +157,7 @@ export async function updateProfile(
       displayName: userProfiles.displayName,
       locale: userProfiles.locale,
       defaultCurrency: userProfiles.defaultCurrency,
+      countryCode: userProfiles.countryCode,
       avatarPath: userProfiles.avatarPath,
     });
   return profile ?? null;
@@ -157,6 +169,7 @@ async function findProfile(db: Database, userId: string): Promise<Profile | null
       displayName: userProfiles.displayName,
       locale: userProfiles.locale,
       defaultCurrency: userProfiles.defaultCurrency,
+      countryCode: userProfiles.countryCode,
       avatarPath: userProfiles.avatarPath,
     })
     .from(userProfiles)

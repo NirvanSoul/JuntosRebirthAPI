@@ -4,7 +4,7 @@ import { moneyAccountBalances, moneyAccounts, transactions, recurringTransaction
 import { serializeMinorAmount } from "../lib/money";
 
 export type BalanceResponse = { currency: string; openingBalanceMinor: string; currentBalanceMinor: string; displayOrder: number };
-export type MoneyAccountResponse = { id: string; name: string; kind: "cash" | "bank" | "card"; icon: string | null; colorToken: string | null; primaryCurrency: string; createdAt: Date; balances: BalanceResponse[] };
+export type MoneyAccountResponse = { id: string; name: string; kind: "cash" | "bank" | "card"; icon: string | null; colorToken: string | null; primaryCurrency: string; createdBy: string | null; createdAt: Date; balances: BalanceResponse[] };
 
 export async function listMoneyAccounts(db: Database, spaceId: string): Promise<MoneyAccountResponse[]> {
   return loadMoneyAccounts(db, spaceId);
@@ -22,7 +22,7 @@ export async function findMoneyAccountWithBalances(db: Database, spaceId: string
 
 async function loadMoneyAccounts(db: Database, spaceId: string, accountId?: string): Promise<MoneyAccountResponse[]> {
   const rows = await db.select({
-    id: moneyAccounts.id, name: moneyAccounts.name, kind: moneyAccounts.kind, icon: moneyAccounts.icon, colorToken: moneyAccounts.colorToken, primaryCurrency: moneyAccounts.primaryCurrency, createdAt: moneyAccounts.createdAt,
+    id: moneyAccounts.id, name: moneyAccounts.name, kind: moneyAccounts.kind, icon: moneyAccounts.icon, colorToken: moneyAccounts.colorToken, primaryCurrency: moneyAccounts.primaryCurrency, createdBy: moneyAccounts.createdBy, createdAt: moneyAccounts.createdAt,
     balanceId: moneyAccountBalances.id, balanceCurrency: moneyAccountBalances.currency, opening: moneyAccountBalances.openingBalanceMinor, displayOrder: moneyAccountBalances.displayOrder,
     transactionType: transactions.type, transactionAmount: transactions.amountMinor,
   }).from(moneyAccounts)
@@ -34,7 +34,7 @@ async function loadMoneyAccounts(db: Database, spaceId: string, accountId?: stri
   const balances = new Map<string, BalanceResponse & { current: bigint }>();
   for (const row of rows) {
     let account = accounts.get(row.id);
-    if (!account) { account = { id: row.id, name: row.name, kind: row.kind, icon: row.icon, colorToken: row.colorToken, primaryCurrency: row.primaryCurrency, createdAt: row.createdAt, balances: [] }; accounts.set(row.id, account); }
+    if (!account) { account = { id: row.id, name: row.name, kind: row.kind, icon: row.icon, colorToken: row.colorToken, primaryCurrency: row.primaryCurrency, createdBy: row.createdBy, createdAt: row.createdAt, balances: [] }; accounts.set(row.id, account); }
     if (!row.balanceId || !row.balanceCurrency || row.opening === null || row.displayOrder === null) continue;
     let balance = balances.get(row.balanceId);
     if (!balance) { balance = { currency: row.balanceCurrency, openingBalanceMinor: serializeMinorAmount(row.opening), currentBalanceMinor: "", displayOrder: row.displayOrder, current: row.opening }; balances.set(row.balanceId, balance); account.balances.push(balance); }
@@ -55,13 +55,13 @@ export async function createMoneyAccountWithBalances(db: Database, input: { spac
     db.insert(moneyAccounts).values({ id, spaceId: input.spaceId, name: input.name, kind: input.kind, icon: input.icon, colorToken: input.colorToken, primaryCurrency: input.primaryCurrency, createdBy: input.userId, createdAt: now, updatedAt: now }),
     ...input.balances.map((balance) => db.insert(moneyAccountBalances).values({ moneyAccountId: id, currency: balance.currency, openingBalanceMinor: balance.openingBalanceMinor, displayOrder: balance.displayOrder, createdAt: now, updatedAt: now })),
   ]);
-  return { id, name: input.name, kind: input.kind, icon: input.icon, colorToken: input.colorToken, primaryCurrency: input.primaryCurrency, createdAt: now, balances: input.balances.map((b) => ({ currency:b.currency, openingBalanceMinor:serializeMinorAmount(b.openingBalanceMinor), currentBalanceMinor:serializeMinorAmount(b.openingBalanceMinor), displayOrder:b.displayOrder })) };
+  return { id, name: input.name, kind: input.kind, icon: input.icon, colorToken: input.colorToken, primaryCurrency: input.primaryCurrency, createdBy: input.userId, createdAt: now, balances: input.balances.map((b) => ({ currency:b.currency, openingBalanceMinor:serializeMinorAmount(b.openingBalanceMinor), currentBalanceMinor:serializeMinorAmount(b.openingBalanceMinor), displayOrder:b.displayOrder })) };
 }
 
 export async function updateMoneyAccount(db: Database, input: {spaceId:string;accountId:string;name?:string;kind?:"cash"|"bank"|"card";icon?:string|null;colorToken?:string|null;primaryCurrency?:string;isArchived?:boolean}) {
   const values: Record<string, unknown> = { updatedAt: new Date() }; Object.assign(values, input.name !== undefined ? {name:input.name}:{}, input.kind !== undefined ? {kind:input.kind}:{}, input.icon !== undefined ? {icon:input.icon}:{}, input.colorToken !== undefined ? {colorToken:input.colorToken}:{}, input.primaryCurrency !== undefined ? {primaryCurrency:input.primaryCurrency}:{});
   if (input.isArchived !== undefined) Object.assign(values, {isArchived:input.isArchived, archivedAt:input.isArchived ? new Date() : null});
-  const [account] = await db.update(moneyAccounts).set(values).where(and(eq(moneyAccounts.id,input.accountId),eq(moneyAccounts.spaceId,input.spaceId))).returning({id:moneyAccounts.id,name:moneyAccounts.name,kind:moneyAccounts.kind,icon:moneyAccounts.icon,colorToken:moneyAccounts.colorToken,primaryCurrency:moneyAccounts.primaryCurrency,createdAt:moneyAccounts.createdAt});
+  const [account] = await db.update(moneyAccounts).set(values).where(and(eq(moneyAccounts.id,input.accountId),eq(moneyAccounts.spaceId,input.spaceId))).returning({id:moneyAccounts.id,name:moneyAccounts.name,kind:moneyAccounts.kind,icon:moneyAccounts.icon,colorToken:moneyAccounts.colorToken,primaryCurrency:moneyAccounts.primaryCurrency,createdBy:moneyAccounts.createdBy,createdAt:moneyAccounts.createdAt});
   return account ?? null;
 }
 

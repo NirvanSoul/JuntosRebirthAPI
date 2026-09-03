@@ -5,6 +5,8 @@ import { normalizeAuthErrorResponse } from "./lib/auth-errors";
 import { reportConfigOnce } from "./lib/config";
 import { healthRoute } from "./routes/health";
 import { ratesRoute } from "./routes/rates";
+import { exchangeRoute } from "./routes/exchange";
+import { createCustomExchangeRatesRoute } from "./routes/custom-exchange-rates";
 import { spacesRoute } from "./routes/spaces";
 import { categoriesRoute } from "./routes/categories";
 import { moneyAccountsRoute } from "./routes/money-accounts";
@@ -16,6 +18,7 @@ import type { Bindings } from "./types/env";
 import { runRecurrences } from "./services/recurrence-engine";
 import { createDb } from "./db/client";
 import { expireStaleInvitations } from "./services/invitations";
+import { captureNextDayRate } from "./services/exchange-rates";
 import { accountRoute } from "./routes/account";
 import { createInvitationAcceptanceRoute, createInvitationPreviewRoute, createInvitationsRoute } from "./routes/invitations";
 import { createMembersRoute } from "./routes/members";
@@ -70,10 +73,14 @@ app.route("/", healthRoute);
 // porque se registra antes. Mover esta línea por debajo la rompe en silencio.
 app.route("/v1/invitations", createInvitationPreviewRoute());
 app.route("/v1/rates", ratesRoute);
+// Igual que `ratesRoute`: son datos de mercado públicos y el payload de
+// `/preview` lleva su propio `countryCode`, sin depender de sesión.
+app.route("/v1/exchange", exchangeRoute);
 // Toda ruta v1 restante es privada. Esta única barrera evita que un endpoint
 // nuevo quede expuesto por omitir un `app.use` específico.
 app.use("/v1/*", requireAuth);
 app.route("/v1", accountRoute);
+app.route("/v1/exchange/custom-rates", createCustomExchangeRatesRoute());
 app.route("/v1", createAvatarsRoute());
 app.route("/v1/me/push-tokens", createPushTokensRoute());
 app.route("/v1", createImportsRoute());
@@ -100,13 +107,23 @@ const worker = Object.assign(app, {
   scheduled(_event: ScheduledEvent, env: Bindings, ctx: ExecutionContext) {
     ctx.waitUntil(
       (async () => {
-        const [recurrences, expiredInvitations] = await Promise.all([
+        const [recurrences, expiredInvitations, venezuelaNextDayRate] = await Promise.all([
           runRecurrences(env.DATABASE_URL),
           expireStaleInvitations(createDb(env.DATABASE_URL)),
+          // Corre cada hora pero solo actúa dentro de la ventana de
+          // publicación del BCV (~3:00pm–8:30pm VE); fuera de ella es un
+          // no-op inmediato. Nunca debe tumbar el resto del cron.
+          captureNextDayRate(createDb(env.DATABASE_URL), "VE").catch((error: unknown) => {
+            console.error(
+              "captureNextDayRate cron tick failed:",
+              error instanceof Error ? error.message : String(error),
+            );
+            return { captured: false };
+          }),
         ]);
         // `invalidSeries` y `truncatedSeries` son la señal de que algo dejó de
         // generarse: sin ellas una serie rota se reintentaba en silencio.
-        console.log(JSON.stringify({ ...recurrences, expiredInvitations }));
+        console.log(JSON.stringify({ ...recurrences, expiredInvitations, venezuelaNextDayRate }));
       })(),
     );
   },

@@ -13,6 +13,7 @@ export type CategoryResponse = {
   name: string;
   icon: string | null;
   colorToken: string | null;
+  createdBy: string | null;
   isDefault: boolean;
   templateKey: string | null;
   isArchived: boolean;
@@ -37,6 +38,7 @@ export async function listCategories(
         name: row.name,
         icon: row.icon,
         colorToken: row.colorToken,
+        createdBy: row.createdBy,
         isDefault: row.isDefault,
         templateKey: row.templateKey,
         isArchived: row.isArchived,
@@ -64,6 +66,7 @@ export function buildCategoryListQuery(db: Database, spaceId: string) {
       name: categories.name,
       icon: categories.icon,
       colorToken: categories.colorToken,
+      createdBy: categories.createdBy,
       isDefault: categories.isDefault,
       templateKey: categories.templateKey,
       isArchived: categories.isArchived,
@@ -143,6 +146,7 @@ export async function createCategory(
       name: categories.name,
       icon: categories.icon,
       colorToken: categories.colorToken,
+      createdBy: categories.createdBy,
       isDefault: categories.isDefault,
       templateKey: categories.templateKey,
       isArchived: categories.isArchived,
@@ -189,6 +193,7 @@ export async function updateCategory(
       name: categories.name,
       icon: categories.icon,
       colorToken: categories.colorToken,
+      createdBy: categories.createdBy,
       isDefault: categories.isDefault,
       templateKey: categories.templateKey,
       isArchived: categories.isArchived,

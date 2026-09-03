@@ -35,9 +35,16 @@ async function workspace(label: string) {
     timezone: "Europe/Madrid",
   });
   const [category] = await db
-    .select({ id: categories.id })
-    .from(categories)
-    .where(and(eq(categories.spaceId, space.id), eq(categories.templateKey, "groceries")));
+    .insert(categories)
+    .values({
+      spaceId: space.id,
+      name: "Supermercado",
+      icon: "groceries",
+      colorToken: "green",
+      templateKey: "groceries",
+      createdBy: userId,
+    })
+    .returning({ id: categories.id });
   return { userId, spaceId: space.id, categoryId: category!.id, personalSpaceId: bootstrap.personalSpace.id };
 }
 

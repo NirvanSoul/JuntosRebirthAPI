@@ -8,18 +8,19 @@ import { createTransactionsRoute } from "../src/routes/transactions";
 import type { Bindings } from "../src/types/env";
 
 const bindings: Bindings = { DATABASE_URL: "postgresql://test", BETTER_AUTH_SECRET: "test-secret", BETTER_AUTH_URL: "https://test", GOOGLE_CLIENT_ID: "test", GOOGLE_CLIENT_SECRET: "test" };
-const transaction = { id: "tx-1", type: "expense" as const, amountMinor: "2599", currency: "EUR", title: "Supermercado", occurredOn: "2026-08-28", categoryId: "category-1", moneyAccountId: "account-1", recurrenceSeriesId: null, createdAt: new Date("2026-08-28T12:00:00Z"), updatedAt: new Date("2026-08-28T12:00:00Z") };
+const transaction = { id: "tx-1", type: "expense" as const, amountMinor: "2599", currency: "EUR", title: "Supermercado", occurredOn: "2026-08-28", categoryId: "category-1", moneyAccountId: "account-1", recurrenceSeriesId: null, createdAt: new Date("2026-08-28T12:00:00Z"), updatedAt: new Date("2026-08-28T12:00:00Z"), exchangeSnapshot: null };
 
 function setup(overrides: Record<string, unknown> = {}) {
   const deps = {
     createDb: () => ({} as Database),
+    findUserCountryCode: vi.fn().mockResolvedValue(null),
     listTransactions: vi.fn().mockResolvedValue({ transactions: [transaction], nextCursor: null }),
     findActiveCategory: vi.fn().mockResolvedValue({ id: "category-1" }),
     findActiveMoneyAccount: vi.fn().mockResolvedValue({ id: "account-1" }),
     accountHasCurrency: vi.fn().mockResolvedValue(true),
     findTransactionInSpace: vi.fn().mockResolvedValue(transaction),
-    createTransaction: vi.fn().mockResolvedValue(transaction),
-    updateTransaction: vi.fn().mockResolvedValue(transaction),
+    createTransaction: vi.fn().mockResolvedValue({ transaction }),
+    updateTransaction: vi.fn().mockResolvedValue({ transaction }),
     ...overrides,
   };
   const testApp = new Hono<{ Bindings: Bindings; Variables: AuthVariables & SpaceAccessVariables }>();
@@ -57,4 +58,25 @@ describe("Transactions routes", () => {
   it("archives and restores through the service", async () => { const { testApp, deps } = setup(); await testApp.request("/v1/spaces/space-1/transactions/tx-1", { method: "PATCH", body: JSON.stringify({ isArchived: true }) }, bindings); await testApp.request("/v1/spaces/space-1/transactions/tx-1", { method: "PATCH", body: JSON.stringify({ isArchived: false }) }, bindings); expect(deps.updateTransaction).toHaveBeenNthCalledWith(1, expect.anything(), expect.objectContaining({ isArchived: true })); expect(deps.updateTransaction).toHaveBeenNthCalledWith(2, expect.anything(), expect.objectContaining({ isArchived: false })); });
   it("keeps historical archived relations editable unless changed", async () => { const { testApp, deps } = setup({ findTransactionInSpace: vi.fn().mockResolvedValue({ ...transaction, moneyAccountId: "archived-account" }) }); const response = await testApp.request("/v1/spaces/space-1/transactions/tx-1", { method: "PATCH", body: JSON.stringify({ title: "Nuevo título" }) }, bindings); expect(response.status).toBe(200); expect(deps.findActiveMoneyAccount).not.toHaveBeenCalled(); });
   it("rejects recurrenceSeriesId as a client-controlled field", async () => { const { testApp } = setup(); const response = await testApp.request("/v1/spaces/space-1/transactions/tx-1", { method: "PATCH", body: JSON.stringify({ recurrenceSeriesId: "series" }) }, bindings); expect(response.status).toBe(400); });
+
+  it("passes the creator's countryCode and customRateId to the service on create", async () => {
+    const { testApp, deps } = setup({ findUserCountryCode: vi.fn().mockResolvedValue("VE") });
+    const response = await testApp.request("/v1/spaces/space-1/transactions", { method: "POST", body: JSON.stringify({ ...body, currency: "VES", customRateId: "rate-1" }) }, bindings);
+    expect(response.status).toBe(201);
+    expect(deps.createTransaction).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ creatorCountryCode: "VE", customRateId: "rate-1", currency: "VES" }));
+  });
+  it("rejects an empty-string customRateId", async () => {
+    const { testApp } = setup(); const response = await testApp.request("/v1/spaces/space-1/transactions", { method: "POST", body: JSON.stringify({ ...body, customRateId: "" }) }, bindings); expect(response.status).toBe(400);
+  });
+  it("surfaces CUSTOM_RATE_NOT_FOUND from the service as a 404", async () => {
+    const { testApp } = setup({ createTransaction: vi.fn().mockResolvedValue({ transaction: null, error: "CUSTOM_RATE_NOT_FOUND" }) });
+    const response = await testApp.request("/v1/spaces/space-1/transactions", { method: "POST", body: JSON.stringify({ ...body, customRateId: "missing" }) }, bindings);
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "CUSTOM_RATE_NOT_FOUND" } });
+  });
+  it("passes the editor's countryCode when updating a movement", async () => {
+    const { testApp, deps } = setup({ findUserCountryCode: vi.fn().mockResolvedValue("VE") });
+    await testApp.request("/v1/spaces/space-1/transactions/tx-1", { method: "PATCH", body: JSON.stringify({ amountMinor: "5000" }) }, bindings);
+    expect(deps.updateTransaction).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ creatorCountryCode: "VE", amountMinor: 5000n }));
+  });
 });

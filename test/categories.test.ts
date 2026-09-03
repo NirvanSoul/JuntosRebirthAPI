@@ -26,6 +26,7 @@ const category: CategoryResponse = {
   name: "Comida",
   icon: "🍔",
   colorToken: "orange",
+  createdBy: "user-1",
   isDefault: false,
   templateKey: null,
   isArchived: false,

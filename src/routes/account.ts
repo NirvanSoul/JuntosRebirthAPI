@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { errorResponse } from "../lib/http";
 import { boundedString, nullableString, parseBody } from "../lib/validation";
 import { normalizeCurrency } from "../lib/currency";
+import { normalizeCountryCode } from "../lib/country";
 import { normalizeTimeZone } from "../lib/timezone";
 import { createDb } from "../db/client";
 import type { AuthVariables } from "../middleware/auth";
@@ -14,6 +15,7 @@ import {
   recordLegalAcceptance,
 } from "../services/account-lifecycle";
 import { deleteAvatar } from "../services/avatars";
+import { deriveCapabilities } from "../services/country-capabilities";
 
 type Env = { Bindings: Bindings; Variables: AuthVariables };
 type Dependencies = typeof service & {
@@ -67,6 +69,17 @@ export function createAccountRoute(deps: Dependencies = defaults) {
           bootstrapRequired: !state.profile || !state.personalSpaceId,
         },
       });
+    } catch {
+      return errorResponse(c, "INTERNAL_SERVER_ERROR");
+    }
+  });
+
+  route.get("/me/capabilities", async (c) => {
+    try {
+      const db = deps.createDb(c.env.DATABASE_URL);
+      const state = await deps.getAccountState(db, c.get("currentUserId"));
+      const countryCode = state.profile?.countryCode ?? null;
+      return c.json({ data: { countryCode, features: deriveCapabilities(countryCode) } });
     } catch {
       return errorResponse(c, "INTERNAL_SERVER_ERROR");
     }
@@ -218,9 +231,11 @@ async function parseBootstrap(request: Request) {
 }
 
 async function parseProfile(request: Request) {
-  const body = await parseBody(request, ["displayName", "locale", "defaultCurrency"]);
+  const body = await parseBody(request, ["displayName", "locale", "defaultCurrency", "countryCode"]);
   if (!body) return null;
-  const input: Partial<Pick<service.Profile, "displayName" | "locale" | "defaultCurrency">> = {};
+  const input: Partial<
+    Pick<service.Profile, "displayName" | "locale" | "defaultCurrency" | "countryCode">
+  > = {};
   if (body.displayName !== undefined) {
     if (typeof body.displayName !== "string") return null;
     const displayName = body.displayName.trim();
@@ -235,6 +250,11 @@ async function parseProfile(request: Request) {
     const currency = normalizeCurrency(body.defaultCurrency);
     if (!currency) return null;
     input.defaultCurrency = currency;
+  }
+  if (body.countryCode !== undefined) {
+    const countryCode = normalizeCountryCode(body.countryCode);
+    if (!countryCode) return null;
+    input.countryCode = countryCode;
   }
   return Object.keys(input).length ? input : null;
 }

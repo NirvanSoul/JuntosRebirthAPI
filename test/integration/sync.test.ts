@@ -101,12 +101,12 @@ describe("space bulk sync against PostgreSQL", () => {
     await syncSpaceData(db, spaceId, userId, batch);
     await syncSpaceData(db, spaceId, userId, batch);
 
-    // El espacio nace con 18 categorías sembradas; el push añade una.
+    // El espacio nace sin categorías sembradas; el push añade una.
     const storedCategories = await db
       .select({ id: categories.id })
       .from(categories)
       .where(eq(categories.spaceId, spaceId));
-    expect(storedCategories).toHaveLength(19);
+    expect(storedCategories).toHaveLength(1);
 
     const storedTransactions = await db
       .select({ id: transactions.id, note: transactions.note })
@@ -205,7 +205,7 @@ describe("space bulk sync against PostgreSQL", () => {
       .select({ id: categories.id, name: categories.name })
       .from(categories)
       .where(eq(categories.spaceId, spaceId));
-    expect(stored).toHaveLength(19);
+    expect(stored).toHaveLength(1);
     expect(stored.find((row) => row.id === created!.id)?.name).toBe("Ocio compartido");
   });
 });
