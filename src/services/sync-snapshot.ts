@@ -9,10 +9,12 @@ import {
   recurringTransactionSeries,
   spaceMembers,
   spaces,
+  transactionReferenceRates,
   transactions,
   user,
   userProfiles,
 } from "../db/schema";
+import { exchangeSnapshotFromRows } from "./transactions";
 
 /**
  * Estado remoto completo de la cuenta. Sustituye a `fetchRemoteAccountSnapshot`,
@@ -118,7 +120,7 @@ export async function buildSnapshot(db: Database, userId: string): Promise<Snaps
   const spaceIds = memberships.map((space) => space.id);
   if (spaceIds.length === 0) return { ...EMPTY };
 
-  const [memberRows, categoryRows, budgetRows, accountRows, balanceRows, seriesRows, transactionRows] =
+  const [memberRows, categoryRows, budgetRows, accountRows, balanceRows, seriesRows, transactionRows, referenceRateRows] =
     await Promise.all([
       db
         .select({
@@ -232,6 +234,19 @@ export async function buildSnapshot(db: Database, userId: string): Promise<Snaps
         })
         .from(transactions)
         .where(inArray(transactions.spaceId, spaceIds)),
+      db
+        .select({
+          transactionId: transactionReferenceRates.transactionId,
+          rateSource: transactionReferenceRates.rateSource,
+          displayCurrency: transactionReferenceRates.displayCurrency,
+          referenceAsset: transactionReferenceRates.referenceAsset,
+          rate: transactionReferenceRates.rate,
+          convertedAmountMinor: transactionReferenceRates.convertedAmountMinor,
+          observedAt: transactionReferenceRates.observedAt,
+        })
+        .from(transactionReferenceRates)
+        .innerJoin(transactions, eq(transactionReferenceRates.transactionId, transactions.id))
+        .where(inArray(transactions.spaceId, spaceIds)),
     ]);
 
   const budgetsByCategory = new Map<string, SnapshotCategory["budgets"]>();
@@ -258,6 +273,12 @@ export async function buildSnapshot(db: Database, userId: string): Promise<Snaps
     list.sort((left, right) => left.displayOrder - right.displayOrder);
   }
 
+  const ratesByTransaction = new Map<string, typeof referenceRateRows>();
+  for (const rate of referenceRateRows) {
+    const list = ratesByTransaction.get(rate.transactionId);
+    if (list) list.push(rate); else ratesByTransaction.set(rate.transactionId, [rate]);
+  }
+
   return {
     spaces: memberships,
     members: memberRows.map((row) => ({ ...row, displayName: row.displayName ?? "Usuario" })),
@@ -276,6 +297,7 @@ export async function buildSnapshot(db: Database, userId: string): Promise<Snaps
     transactions: transactionRows.map((transaction) => ({
       ...transaction,
       amountMinor: serializeMinorAmount(transaction.amountMinor),
+      exchangeSnapshot: exchangeSnapshotFromRows(ratesByTransaction.get(transaction.id), transaction.currency),
     })),
   };
 }

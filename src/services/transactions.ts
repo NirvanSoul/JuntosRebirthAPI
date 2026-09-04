@@ -76,7 +76,7 @@ async function attachExchangeSnapshots<T extends { id: string }>(
 
   return rows.map((row) => ({
     ...row,
-    exchangeSnapshot: snapshotFromRows(byTransaction.get(row.id)),
+    exchangeSnapshot: exchangeSnapshotFromRows(byTransaction.get(row.id), (row as { currency?: string }).currency ?? ""),
   }));
 }
 
@@ -89,14 +89,20 @@ type SnapshotSourceRow = {
   observedAt: Date | null;
 };
 
-function snapshotFromRows(rateRows: SnapshotSourceRow[] | undefined): ExchangeSnapshotDTO | null {
+export function exchangeSnapshotFromRows(
+  rateRows: SnapshotSourceRow[] | undefined,
+  createdWithCurrency: string,
+): ExchangeSnapshotDTO | null {
   if (!rateRows || !rateRows.length) return null;
 
   const rates: ExchangeSnapshotDTO["rates"] = {};
   for (const row of rateRows) {
     const entry: ExchangeSnapshotRateDTO = {
       baseCurrency: row.referenceAsset,
-      quoteCurrency: row.displayCurrency,
+      // La tasa siempre está expresada contra bolívares. `displayCurrency`
+      // describe el resultado de esta conversión puntual (USD al partir de
+      // VES, por ejemplo) y no debe confundirse con la divisa cotizada.
+      quoteCurrency: "VES",
       rate: row.rate,
       convertedAmountMinor: serializeMinorAmount(row.convertedAmountMinor),
       observedAt: row.observedAt?.toISOString() ?? null,
@@ -105,17 +111,12 @@ function snapshotFromRows(rateRows: SnapshotSourceRow[] | undefined): ExchangeSn
       rates[row.rateSource] = entry;
     }
   }
-  // `displayCurrency`/`referenceAsset` en la fila describen la conversión, no
-  // la moneda original del movimiento; para eso basta con que exista al menos
-  // una fila — el campo `createdWithCurrency` no se puede reconstruir de una
-  // fila de tasa aislada, así que lo completa el caller.
-  return { countryCode: "VE", createdWithCurrency: "", rates };
+  return { countryCode: "VE", createdWithCurrency, rates };
 }
 
 function snapshotToDTO(snapshot: MovementSnapshot | null): ExchangeSnapshotDTO | null {
   if (!snapshot) return null;
-  const dto = snapshotFromRows(snapshot.rows);
-  return dto ? { ...dto, createdWithCurrency: snapshot.createdWithCurrency } : null;
+  return exchangeSnapshotFromRows(snapshot.rows, snapshot.createdWithCurrency);
 }
 
 export async function listTransactions(db: Database, spaceId: string, limit: number, cursor: TransactionCursor | null) {
@@ -200,7 +201,7 @@ export async function updateTransaction(
   for (const key of ["type", "amountMinor", "currency", "title", "occurredOn", "categoryId", "moneyAccountId", "note"] as const) if (input[key] !== undefined) values[key] = input[key];
   if (input.isArchived !== undefined) { values.isArchived = input.isArchived; values.archivedAt = input.isArchived ? new Date() : null; }
 
-  const refreezeSnapshot = input.amountMinor !== undefined || input.currency !== undefined || input.customRateId !== undefined;
+  const refreezeSnapshot = input.amountMinor !== undefined || input.currency !== undefined || input.occurredOn !== undefined || input.customRateId !== undefined;
 
   const [row] = await db.update(transactions).set(values).where(and(eq(transactions.id, input.transactionId), eq(transactions.spaceId, input.spaceId))).returning(selectFields());
   if (!row) return { transaction: null };
@@ -228,21 +229,24 @@ export async function updateTransaction(
 }
 
 function shouldAttemptSnapshot(currency: string, creatorCountryCode: string | null): boolean {
-  return currency === "VES" || (currency === "USD" && creatorCountryCode === "VE");
+  return creatorCountryCode === "VE" && (currency === "VES" || currency === "USD");
 }
 
 async function insertReferenceRateRows(db: Database, transactionId: string, snapshot: MovementSnapshot) {
-  await db.insert(transactionReferenceRates).values(
-    snapshot.rows.map((row) => ({
-      transactionId,
-      displayCurrency: row.displayCurrency,
-      rateSource: row.rateSource,
-      referenceAsset: row.referenceAsset,
-      rate: row.rate,
-      convertedAmountMinor: row.convertedAmountMinor,
-      rateSnapshotId: row.rateSnapshotId,
-      customRateId: row.customRateId,
-      observedAt: row.observedAt,
-    })),
-  );
+  await db.insert(transactionReferenceRates).values(snapshotReferenceRateValues(transactionId, snapshot));
+}
+
+/** Valores de persistencia comunes a rutas directas y sincronización offline. */
+export function snapshotReferenceRateValues(transactionId: string, snapshot: MovementSnapshot) {
+  return snapshot.rows.map((row) => ({
+    transactionId,
+    displayCurrency: row.displayCurrency,
+    rateSource: row.rateSource,
+    referenceAsset: row.referenceAsset,
+    rate: row.rate,
+    convertedAmountMinor: row.convertedAmountMinor,
+    rateSnapshotId: row.rateSnapshotId,
+    customRateId: row.customRateId,
+    observedAt: row.observedAt,
+  }));
 }

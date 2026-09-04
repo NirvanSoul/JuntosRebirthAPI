@@ -84,3 +84,50 @@ usa el comando que aplica migraciones antes de publicar el Worker:
 ```bash
 npm run deploy:production
 ```
+
+## Sincronización de tasas Venezuela
+
+`POST /v1/spaces/:spaceId/sync` admite `customRateId?: string | null` solamente
+dentro de cada objeto de `transactions`. El cliente nunca debe incluir una
+tasa, importe convertido, fuente ni `exchangeSnapshot`: esos campos se rechazan
+porque el servidor calcula y congela la equivalencia.
+
+Para un usuario cuyo `countryCode` sea `VE`, una transacción en `USD` o `VES`
+creada por sync guarda referencias `BCV` y `EURO`; añade `CUSTOM` únicamente
+si el `customRateId` pertenece a la persona autenticada. Si no hay una tasa
+oficial disponible, el movimiento se guarda sin snapshot (`null`), sin fabricar
+valores. Una tasa personalizada ajena o inexistente devuelve
+`CUSTOM_RATE_NOT_FOUND` y no se aplica el batch.
+
+En actualizaciones, solo `amountMinor`, `currency`, `occurredOn` o un
+`customRateId` explícito regeneran el snapshot. El resto de cambios conserva la
+equivalencia histórica. La respuesta conserva los conteos previos y, cuando se
+procesan movimientos, añade:
+
+```json
+{
+  "transactions": [{
+    "localId": "local-transaction-id",
+    "remoteId": "uuid",
+    "updatedAt": "2026-09-04T12:00:00.000Z",
+    "exchangeSnapshot": {
+      "countryCode": "VE",
+      "createdWithCurrency": "VES",
+      "rates": {
+        "BCV": {
+          "baseCurrency": "USD",
+          "quoteCurrency": "VES",
+          "rate": "50.0000000000",
+          "convertedAmountMinor": "20000",
+          "observedAt": "2026-09-04T04:00:00.000Z"
+        }
+      }
+    }
+  }]
+}
+```
+
+`GET /v1/sync/snapshot` devuelve la misma forma bajo cada transacción. Los
+importes de la transacción y de las tasas se serializan siempre como strings de
+unidades menores; movimientos legacy sin referencias devuelven
+`exchangeSnapshot: null`.

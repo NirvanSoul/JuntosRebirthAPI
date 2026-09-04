@@ -6,6 +6,7 @@ import { reportConfigOnce } from "./lib/config";
 import { healthRoute } from "./routes/health";
 import { ratesRoute } from "./routes/rates";
 import { exchangeRoute } from "./routes/exchange";
+import { exchangeRatesRoute } from "./routes/exchange-rates";
 import { createCustomExchangeRatesRoute } from "./routes/custom-exchange-rates";
 import { spacesRoute } from "./routes/spaces";
 import { categoriesRoute } from "./routes/categories";
@@ -76,6 +77,9 @@ app.route("/v1/rates", ratesRoute);
 // Igual que `ratesRoute`: son datos de mercado públicos y el payload de
 // `/preview` lleva su propio `countryCode`, sin depender de sesión.
 app.route("/v1/exchange", exchangeRoute);
+// Contrato acotado de Fase 2 para el selector USD/Bolívares. Como las tasas
+// son datos de mercado, conserva el mismo acceso público de `/v1/exchange`.
+app.route("/v1/exchange-rates", exchangeRatesRoute);
 // Toda ruta v1 restante es privada. Esta única barrera evita que un endpoint
 // nuevo quede expuesto por omitir un `app.use` específico.
 app.use("/v1/*", requireAuth);

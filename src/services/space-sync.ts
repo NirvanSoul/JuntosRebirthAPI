@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import type { Database } from "../db/client";
 import {
   categories,
@@ -8,8 +8,11 @@ import {
   moneyAccounts,
   recurringTransactionSeries,
   spaces,
+  transactionReferenceRates,
   transactions,
 } from "../db/schema";
+import { buildMovementSnapshot, type MovementSnapshot } from "./exchange-rates";
+import { exchangeSnapshotFromRows, snapshotReferenceRateValues, type ExchangeSnapshotDTO } from "./transactions";
 
 type Row = Record<string, unknown>;
 
@@ -26,12 +29,14 @@ export type SpaceSyncResult = {
   moneyAccountCount: number;
   recurringSeriesCount: number;
   transactionCount: number;
+  transactions?: { localId: string; remoteId: string; updatedAt: string; exchangeSnapshot: ExchangeSnapshotDTO | null }[];
 };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 type Existing = { id: string; sourceInstallationId: string | null; sourceLocalId: string | null };
 type ExistingCategory = Existing & { templateKey?: string | null };
+type ExistingTransaction = Existing & { amountMinor: bigint; currency: string; occurredOn: string };
 
 /**
  * Traduce los identificadores locales del dispositivo a los remotos, en el
@@ -119,9 +124,11 @@ export async function syncSpaceData(
   spaceId: string,
   userId: string,
   payload: SpaceSyncPayload,
+  creatorCountryCode: string | null = null,
 ): Promise<SpaceSyncResult> {
   const installationId = text(payload.installationId);
   if (!installationId) throw new Error("INVALID_PAYLOAD");
+  for (const transaction of payload.transactions) validateSyncedTransaction(transaction);
 
   const [space] = await db
     .select({ currency: spaces.currency })
@@ -167,6 +174,9 @@ export async function syncSpaceData(
           id: transactions.id,
           sourceInstallationId: transactions.sourceInstallationId,
           sourceLocalId: transactions.sourceLocalId,
+          amountMinor: transactions.amountMinor,
+          currency: transactions.currency,
+          occurredOn: transactions.occurredOn,
         })
         .from(transactions)
         .where(eq(transactions.spaceId, spaceId)),
@@ -184,6 +194,18 @@ export async function syncSpaceData(
   const accountIds = resolveIds(existingAccounts, payload.moneyAccounts, installationId);
   const seriesIds = resolveIds(existingSeries, payload.recurringSeries, installationId);
   const transactionIds = resolveIds(existingTransactions, payload.transactions, installationId);
+
+  // La selección de CUSTOM no vive en `transactions`: solo existe en la fila
+  // congelada. Se lee exclusivamente para conservarla cuando el cliente no
+  // manda `customRateId`; nunca se devuelve a otro miembro del espacio.
+  const existingReferenceRates = existingTransactions.length
+    ? await db.select().from(transactionReferenceRates).where(inArray(transactionReferenceRates.transactionId, existingTransactions.map((row) => row.id)))
+    : [];
+  const referenceRatesByTransaction = new Map<string, typeof existingReferenceRates>();
+  for (const rate of existingReferenceRates) {
+    const list = referenceRatesByTransaction.get(rate.transactionId);
+    if (list) list.push(rate); else referenceRatesByTransaction.set(rate.transactionId, [rate]);
+  }
 
   // Una referencia puede apuntar a una fila que ya vive en el servidor y que no
   // viaja en este lote: por eso el mapa se completa con lo ya existente.
@@ -208,6 +230,7 @@ export async function syncSpaceData(
   });
 
   const writes: unknown[] = [];
+  const syncedTransactions: SpaceSyncResult["transactions"] = [];
 
   for (const row of payload.categories) {
     const localId = text(row.id);
@@ -427,6 +450,23 @@ export async function syncSpaceData(
     const rawAmount = integer(row.amountMinor);
     const amountMinor = BigInt(Math.max(1, rawAmount));
     const occurredOn = dateOnly(row.occurredOn, now.toISOString().slice(0, 10));
+    const currency = text(row.currency);
+    const existing = existingTransactions.find((transaction) => transaction.id === id) as ExistingTransaction | undefined;
+    const hasCustomRateId = Object.prototype.hasOwnProperty.call(row, "customRateId");
+    const customRateId = hasCustomRateId ? customRateIdValue(row.customRateId) : existingCustomRateId(referenceRatesByTransaction.get(id));
+    if (hasCustomRateId && customRateId === undefined) throw new Error("INVALID_PAYLOAD");
+
+    // Una creación siempre necesita cálculo. En updates solo cambia la
+    // congelación ante campos monetarios o la elección explícita de CUSTOM;
+    // título, nota, categoría, cuenta y tipo preservan las filas existentes.
+    const regenerate = !existing ||
+      existing.amountMinor !== amountMinor || existing.currency !== currency || existing.occurredOn !== occurredOn || hasCustomRateId;
+    let snapshot: MovementSnapshot | null = null;
+    if (regenerate && creatorCountryCode === "VE" && (currency === "USD" || currency === "VES")) {
+      const result = await buildMovementSnapshot(db, { userId, amountMinor, currency, customRateId });
+      if (result.error) throw new Error(result.error);
+      snapshot = result.snapshot;
+    }
 
     writes.push(
       db
@@ -439,7 +479,7 @@ export async function syncSpaceData(
           createdBy: stringOrNull(row.createdBy) ?? userId,
           type: transactionType(row.type),
           amountMinor,
-          currency: text(row.currency),
+          currency,
           title: text(row.title),
           occurredOn,
           note: stringOrNull(row.note),
@@ -478,6 +518,21 @@ export async function syncSpaceData(
           setWhere: sql`${transactions.spaceId} = ${spaceId} AND excluded.updated_at >= ${transactions.updatedAt}`,
         }),
     );
+
+    if (regenerate) {
+      writes.push(db.delete(transactionReferenceRates).where(eq(transactionReferenceRates.transactionId, id)));
+      if (snapshot) writes.push(db.insert(transactionReferenceRates).values(snapshotReferenceRateValues(id, snapshot)));
+    }
+
+    const priorRates = referenceRatesByTransaction.get(id);
+    syncedTransactions.push({
+      localId,
+      remoteId: id,
+      updatedAt: updatedAt.toISOString(),
+      exchangeSnapshot: regenerate
+        ? exchangeSnapshotFromRows(snapshot?.rows, currency)
+        : exchangeSnapshotFromRows(priorRates, existing?.currency ?? currency),
+    });
   }
 
   if (writes.length > 0) {
@@ -489,7 +544,34 @@ export async function syncSpaceData(
     moneyAccountCount: payload.moneyAccounts.length,
     recurringSeriesCount: payload.recurringSeries.length,
     transactionCount: payload.transactions.length,
+    ...(syncedTransactions.length ? { transactions: syncedTransactions } : {}),
   };
+}
+
+function customRateIdValue(value: unknown): string | null | undefined {
+  if (value === null) return null;
+  return typeof value === "string" && UUID.test(value) ? value : undefined;
+}
+
+function validateSyncedTransaction(row: Row) {
+  // Las equivalencias congeladas solo se originan en el servidor. Este filtro
+  // explícito evita que un cliente offline (o una versión antigua modificada)
+  // pueda inyectar una tasa que luego parezca histórica.
+  const allowedFields = new Set([
+    "id", "remoteId", "categoryId", "moneyAccountId", "createdBy", "type",
+    "amountMinor", "currency", "title", "occurredOn", "note", "recurrence",
+    "recurrenceGroupId", "recurrenceSeriesId", "sourceTransactionId", "isArchived",
+    "createdAt", "updatedAt", "customRateId",
+  ]);
+  if (Object.keys(row).some((field) => !allowedFields.has(field))) throw new Error("INVALID_PAYLOAD");
+  if (Object.prototype.hasOwnProperty.call(row, "customRateId") && customRateIdValue(row.customRateId) === undefined) {
+    throw new Error("INVALID_PAYLOAD");
+  }
+}
+
+function existingCustomRateId(rows: { rateSource: string; customRateId: string | null }[] | undefined): string | null | undefined {
+  const custom = rows?.find((row) => row.rateSource === "CUSTOM");
+  return custom?.customRateId;
 }
 
 function referenceMap(

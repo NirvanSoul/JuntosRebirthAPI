@@ -260,6 +260,47 @@ describe("space bulk sync", () => {
     });
   });
 
+  it("returns an immediate null snapshot for a non-Venezuela currency", async () => {
+    const { db } = fakeDatabase();
+    const result = await syncSpaceData(
+      db,
+      SPACE,
+      "user-1",
+      payload({
+        categories: [category()],
+        transactions: [{
+          id: "44444444-4444-4444-8444-444444444444",
+          categoryId: "22222222-2222-4222-8222-222222222222",
+          moneyAccountId: null,
+          type: "expense",
+          amountMinor: 1250,
+          currency: "EUR",
+          title: "Café",
+          occurredOn: "2026-08-20",
+          isArchived: false,
+          createdAt: NOW,
+          updatedAt: NOW,
+        }],
+      }),
+      "VE",
+    );
+
+    expect(result.transactions).toEqual([expect.objectContaining({
+      localId: "44444444-4444-4444-8444-444444444444",
+      remoteId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      exchangeSnapshot: null,
+    })]);
+  });
+
+  it("rejects client-supplied snapshot values before writing the batch", async () => {
+    const { db, batch } = fakeDatabase();
+    await expect(syncSpaceData(db, SPACE, "user-1", payload({
+      transactions: [{ id: "local-1", exchangeSnapshot: { rate: "50" } }],
+    }))).rejects.toThrow("INVALID_PAYLOAD");
+    expect(batch).not.toHaveBeenCalled();
+  });
+
+
   it("resolves a category that lives on the server and is not in this batch", async () => {
     const { db, captured } = fakeDatabase({
       categories: [
