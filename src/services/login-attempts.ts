@@ -2,9 +2,13 @@ import { eq, sql } from "drizzle-orm";
 import type { Database } from "../db/client";
 import { loginAttempts } from "../db/schema";
 
-/** Mismos umbrales que la edge function `login-with-lockout` que se sustituye. */
-export const MAX_FAILED_ATTEMPTS = 9;
-export const LOCK_DURATION_MS = 60 * 60 * 1000;
+/**
+ * Permite corregir una contraseña escrita deprisa sin debilitar la protección
+ * contra fuerza bruta. El bloqueo es deliberadamente corto y se aplica en el
+ * servidor, que es la única autoridad para esta regla.
+ */
+export const MAX_FAILED_ATTEMPTS = 15;
+export const LOCK_DURATION_MS = 5 * 60 * 1000;
 
 export function normalizeEmail(value: unknown): string | null {
   if (typeof value !== "string") return null;

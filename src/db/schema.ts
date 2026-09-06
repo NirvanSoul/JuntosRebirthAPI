@@ -215,8 +215,8 @@ export const recurringTransactionOccurrenceStatusEnum = pgEnum(
 
 /**
  * Bloqueo de fuerza bruta por correo. Sustituye la edge function
- * `login-with-lockout` de la base anterior: 9 intentos fallidos bloquean el
- * acceso durante una hora. Se indexa por correo en minúsculas, nunca por
+ * `login-with-lockout` de la base anterior: 15 intentos fallidos bloquean el
+ * acceso durante cinco minutos. Se indexa por correo en minúsculas, nunca por
  * usuario, para no revelar si la cuenta existe.
  */
 export const loginAttempts = pgTable("login_attempts", {
@@ -288,6 +288,10 @@ export const userProfiles = pgTable("user_profiles", {
   personalSpaceId: uuid("personal_space_id").references(() => spaces.id, {
     onDelete: "set null",
   }),
+  activeFinancialContextId: uuid("active_financial_context_id").references(
+    () => financialContexts.id,
+    { onDelete: "set null" },
+  ),
   createdAt: timestamp("created_at", { withTimezone: true })
     .defaultNow()
     .notNull(),
@@ -297,6 +301,36 @@ export const userProfiles = pgTable("user_profiles", {
     .notNull(),
 });
 
+/**
+ * Un libro personal independiente por país. No se usa para espacios
+ * compartidos: un espacio compartido pertenece a más de una persona y se
+ * aísla por `spaces.country_code` al consultar la membresía de cada persona.
+ */
+export const financialContexts = pgTable(
+  "financial_contexts",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    countryCode: varchar("country_code", { length: 2 }).notNull(),
+    canonicalCurrency: varchar("canonical_currency", { length: 3 }).notNull(),
+    personalSpaceId: uuid("personal_space_id")
+      .notNull()
+      .references(() => spaces.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex("financial_contexts_user_country_idx").on(table.userId, table.countryCode),
+    uniqueIndex("financial_contexts_personal_space_idx").on(table.personalSpaceId),
+    index("financial_contexts_user_idx").on(table.userId),
+  ],
+);
+
 export const spaces = pgTable(
   "spaces",
   {
@@ -304,6 +338,9 @@ export const spaces = pgTable(
     name: text("name").notNull(),
     type: spaceTypeEnum("type").default("personal").notNull(),
     currency: text("currency").default("EUR").notNull(),
+    // Los espacios son de un único país. `NULL` representa el estado legado o
+    // previo a que la persona complete su país; no se mezcla con un país real.
+    countryCode: varchar("country_code", { length: 2 }),
     timezone: varchar("timezone", { length: 64 }).default("UTC").notNull(),
     createdBy: text("created_by").references(() => user.id, {
       onDelete: "set null",
@@ -656,6 +693,9 @@ export const transactions = pgTable(
     }),
     type: transactionTypeEnum("type").notNull(),
     amountMinor: bigint("amount_minor", { mode: "bigint" }).notNull(),
+    // Importe contable canónico del modo Venezuela. Es nulo para históricos y
+    // para países que no usan este libro USD.
+    accountingAmountMinorUsd: bigint("accounting_amount_minor_usd", { mode: "bigint" }),
     currency: varchar("currency", { length: 3 }).notNull(),
     title: text("title").notNull(),
     occurredOn: date("occurred_on").notNull(),

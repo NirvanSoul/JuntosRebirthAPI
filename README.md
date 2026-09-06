@@ -95,9 +95,15 @@ porque el servidor calcula y congela la equivalencia.
 Para un usuario cuyo `countryCode` sea `VE`, una transacción en `USD` o `VES`
 creada por sync guarda referencias `BCV` y `EURO`; añade `CUSTOM` únicamente
 si el `customRateId` pertenece a la persona autenticada. Si no hay una tasa
-oficial disponible, el movimiento se guarda sin snapshot (`null`), sin fabricar
-valores. Una tasa personalizada ajena o inexistente devuelve
-`CUSTOM_RATE_NOT_FOUND` y no se aplica el batch.
+oficial disponible, el batch responde `VENEZUELA_RATES_UNAVAILABLE` (502) y
+no aplica el movimiento: no se fabrican ni se persisten importes contables
+incompletos. Una tasa personalizada ajena o inexistente devuelve
+`CUSTOM_RATE_NOT_FOUND` y tampoco se aplica el batch.
+
+En espacios `VE`, cada `moneyAccounts` del sync debe llevar `currency: "USD"`
+y exactamente un balance `USD`; otro formato devuelve
+`VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED` (409). Los movimientos nuevos solo
+aceptan `USD` o `VES`.
 
 En actualizaciones, solo `amountMinor`, `currency`, `occurredOn` o un
 `customRateId` explícito regeneran el snapshot. El resto de cambios conserva la
@@ -110,6 +116,7 @@ procesan movimientos, añade:
     "localId": "local-transaction-id",
     "remoteId": "uuid",
     "updatedAt": "2026-09-04T12:00:00.000Z",
+    "accountingAmountMinorUsd": "20000",
     "exchangeSnapshot": {
       "countryCode": "VE",
       "createdWithCurrency": "VES",
@@ -119,6 +126,7 @@ procesan movimientos, añade:
           "quoteCurrency": "VES",
           "rate": "50.0000000000",
           "convertedAmountMinor": "20000",
+          "convertedCurrency": "USD",
           "observedAt": "2026-09-04T04:00:00.000Z"
         }
       }
@@ -127,7 +135,9 @@ procesan movimientos, añade:
 }
 ```
 
-`GET /v1/sync/snapshot` devuelve la misma forma bajo cada transacción. Los
-importes de la transacción y de las tasas se serializan siempre como strings de
-unidades menores; movimientos legacy sin referencias devuelven
+`GET /v1/sync/snapshot` devuelve la misma forma bajo cada transacción, incluido
+`accountingAmountMinorUsd`. Los importes de la transacción y de las tasas se
+serializan siempre como strings de unidades menores; `convertedCurrency` indica
+la moneda exacta de cada `convertedAmountMinor`. Movimientos legacy sin
+referencias devuelven
 `exchangeSnapshot: null`.

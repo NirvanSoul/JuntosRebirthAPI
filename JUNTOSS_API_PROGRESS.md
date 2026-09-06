@@ -15,7 +15,8 @@ al plan maestro; registra decisiones y entregables verificables.
       cacheo por isolate del cliente Neon y de Better Auth, `onError`/`notFound`,
       CORS y `requireSpaceRole`.
 - [x] Autenticación completa: email+contraseña, OTP de verificación y de
-      restablecimiento, Google, y bloqueo por 9 intentos fallidos (`login_attempts`).
+      restablecimiento, Google, y bloqueo de cinco minutos tras 15 intentos
+      fallidos (`login_attempts`).
 - [x] Sincronización masiva: `GET /v1/sync/snapshot` y
       `POST /v1/spaces/:spaceId/sync`.
 - [x] Perfil y avatares en R2.
@@ -90,7 +91,7 @@ Leyenda: ✅ hecho · ➖ no aplica · ❌ pendiente
 | auth (Google) | ✅ | ✅ | ✅ | ➖ | ✅ URL OAuth generada |
 | auth (email+password) | ✅ | ✅ | ✅ | ➖ | ✅ alta y acceso |
 | auth (OTP verificación/reset) | ✅ | ✅ | ✅ | ➖ | ❌ el código llega por correo |
-| bloqueo por intentos | ✅ | ✅ | ✅ | ➖ | ✅ 9 fallos → 429 |
+| bloqueo por intentos | ✅ | ✅ | ✅ | ➖ | ✅ 15 fallos → 429; bloqueo de 5 min |
 | bootstrap | ✅ | ✅ | ✅ | ✅ | ✅ idempotente |
 | perfil (`/v1/me`) | ✅ | ✅ | ✅ | ✅ | ✅ |
 | spaces | ✅ | ✅ | ✅ | ✅ | ✅ |

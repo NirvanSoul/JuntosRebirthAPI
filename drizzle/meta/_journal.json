@@ -148,6 +148,27 @@
       "when": 1788325200000,
       "tag": "0020_venezuela_exchange_rates",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1788328800000,
+      "tag": "0021_space_country_code",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1788332400000,
+      "tag": "0022_venezuela_accounting_usd",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1788336000000,
+      "tag": "0023_financial_contexts",
+      "breakpoints": true
     }
   ]
 }

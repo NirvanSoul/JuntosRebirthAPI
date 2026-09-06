@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Database } from "../../src/db/client";
-import { createTransaction } from "../../src/services/transactions";
+import { createTransaction, exchangeSnapshotFromRows } from "../../src/services/transactions";
 
 /**
  * Regresión del bug real detrás de "el movimiento se le atribuye a otro
@@ -74,5 +74,23 @@ describe("createTransaction", () => {
     expect(valuesB()?.createdBy).toBe("user-b");
     expect(resultA.transaction?.createdBy).toBe("user-a");
     expect(resultB.transaction?.createdBy).toBe("user-b");
+  });
+});
+
+describe("exchangeSnapshotFromRows", () => {
+  it("identifies the currency of each frozen converted amount", () => {
+    const snapshot = exchangeSnapshotFromRows([{
+      rateSource: "BCV",
+      displayCurrency: "USD",
+      referenceAsset: "USD",
+      rate: "50.0000000000",
+      convertedAmountMinor: 20000n,
+      observedAt: new Date("2026-09-04T04:00:00.000Z"),
+    }], "VES");
+
+    expect(snapshot?.rates.BCV).toMatchObject({
+      convertedAmountMinor: "20000",
+      convertedCurrency: "USD",
+    });
   });
 });

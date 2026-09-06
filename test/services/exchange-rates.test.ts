@@ -156,7 +156,7 @@ describe("buildMovementSnapshot", () => {
     expect(bcv).toMatchObject({ displayCurrency: "USD", rate: "50.0000000000", convertedAmountMinor: 20000n });
   });
 
-  it("is best-effort: returns null instead of throwing when the provider is unavailable", async () => {
+  it("reports that USD accounting cannot be completed when no rate is available", async () => {
     const service = fakeVenezuelaRateService(new Error("upstream down"));
     const { snapshot, error } = await buildMovementSnapshot(
       mockDb({ snapshotRows: [] }),
@@ -164,7 +164,7 @@ describe("buildMovementSnapshot", () => {
       service,
     );
     expect(snapshot).toBeNull();
-    expect(error).toBeUndefined();
+    expect(error).toBe("VENEZUELA_RATES_UNAVAILABLE");
   });
 
   it("reports CUSTOM_RATE_NOT_FOUND when the customRateId does not belong to the user", async () => {

@@ -1,6 +1,7 @@
 import { neon } from "@neondatabase/serverless";
 import { createDb, type Database } from "../../src/db/client";
-import { user } from "../../src/db/schema";
+import { inArray } from "drizzle-orm";
+import { spaces, user } from "../../src/db/schema";
 
 /**
  * Las pruebas de integración corren contra PostgreSQL real, porque todo lo
@@ -40,6 +41,10 @@ export function rawSql() {
 }
 
 let counter = 0;
+// Cada archivo de Vitest se ejecuta en su propio contexto aislado. Mantener
+// sus IDs evita que el `afterAll` de un archivo borre los datos que otro aún
+// está usando si el runner decide solapar workers.
+const createdTestUserIds = new Set<string>();
 
 /** Crea un usuario de Better Auth aislado y devuelve su id. */
 export async function createTestUser(db: Database, label = "user") {
@@ -53,14 +58,26 @@ export async function createTestUser(db: Database, label = "user") {
     createdAt: now,
     updatedAt: now,
   });
+  createdTestUserIds.add(id);
   return id;
+}
+
+/** Registra usuarios que una prueba crea directamente para controlar su email. */
+export function registerTestUser(id: string) {
+  createdTestUserIds.add(id);
 }
 
 /** Borra únicamente lo creado por las pruebas. */
 export async function cleanupTestUsers() {
+  const ids = [...createdTestUserIds];
+  if (ids.length) {
+    // Primero espacios: `created_by` es SET NULL, así que borrar solo usuarios
+    // dejaría espacios huérfanos y ensuciaría el siguiente archivo.
+    await testDb().delete(spaces).where(inArray(spaces.createdBy, ids));
+    await testDb().delete(user).where(inArray(user.id, ids));
+  }
+  createdTestUserIds.clear();
   const sql = rawSql();
-  await sql`DELETE FROM spaces WHERE created_by LIKE ${TEST_USER_PREFIX + "%"}`;
-  await sql`DELETE FROM "user" WHERE id LIKE ${TEST_USER_PREFIX + "%"}`;
   // Los agregados de comercios no cuelgan de ningún usuario, así que el
   // ON DELETE CASCADE no los alcanza: se retiran los que se quedan sin votos.
   await sql`

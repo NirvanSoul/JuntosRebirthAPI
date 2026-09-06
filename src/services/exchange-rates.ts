@@ -297,7 +297,7 @@ export async function buildMovementSnapshot(
   db: Database,
   input: { userId: string; amountMinor: bigint; currency: string; customRateId?: string | null },
   venezuelaRateService: VenezuelaRateService = new VenezuelaRateService(),
-): Promise<{ snapshot: MovementSnapshot | null; error?: "CUSTOM_RATE_NOT_FOUND" }> {
+): Promise<{ snapshot: MovementSnapshot | null; error?: "CUSTOM_RATE_NOT_FOUND" | "VENEZUELA_RATES_UNAVAILABLE" }> {
   if (input.currency !== "VES" && input.currency !== "USD") return { snapshot: null };
 
   let customRate: typeof customExchangeRates.$inferSelect | null = null;
@@ -320,7 +320,10 @@ export async function buildMovementSnapshot(
     );
     resolved = null;
   }
-  if (!resolved) return { snapshot: null };
+  // El libro contable USD no admite una conversión desconocida. Antes se
+  // aceptaba el movimiento sin snapshot durante una caída del proveedor, con
+  // `accountingAmountMinorUsd` vacío e imposible de agregar correctamente.
+  if (!resolved) return { snapshot: null, error: "VENEZUELA_RATES_UNAVAILABLE" };
 
   const usdSnap = resolved.byAsset.get("USD")!;
   const eurSnap = resolved.byAsset.get("EUR")!;

@@ -1,6 +1,6 @@
 import { and, eq, isNull, isNotNull, notExists, sql } from "drizzle-orm";
 import { type Database } from "../db/client";
-import { moneyAccountBalances, moneyAccounts, transactions, recurringTransactionSeries } from "../db/schema";
+import { moneyAccountBalances, moneyAccounts, transactions, recurringTransactionSeries, spaces } from "../db/schema";
 import { serializeMinorAmount } from "../lib/money";
 
 export type BalanceResponse = { currency: string; openingBalanceMinor: string; currentBalanceMinor: string; displayOrder: number };
@@ -8,6 +8,10 @@ export type MoneyAccountResponse = { id: string; name: string; kind: "cash" | "b
 
 export async function listMoneyAccounts(db: Database, spaceId: string): Promise<MoneyAccountResponse[]> {
   return loadMoneyAccounts(db, spaceId);
+}
+export async function findSpaceCountryCode(db: Database, spaceId: string) {
+  const [space] = await db.select({ countryCode: spaces.countryCode }).from(spaces).where(eq(spaces.id, spaceId)).limit(1);
+  return space?.countryCode ?? null;
 }
 
 /**

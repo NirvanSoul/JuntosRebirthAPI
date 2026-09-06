@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import type { Database } from "../db/client";
 import { serializeMinorAmount } from "../lib/money";
 import {
@@ -77,6 +77,7 @@ export type SnapshotMember = {
 };
 
 export type Snapshot = {
+  activeFinancialContextId: string | null;
   spaces: SnapshotSpace[];
   members: SnapshotMember[];
   categories: SnapshotCategory[];
@@ -86,6 +87,7 @@ export type Snapshot = {
 };
 
 const EMPTY: Snapshot = {
+  activeFinancialContextId: null,
   spaces: [],
   members: [],
   categories: [],
@@ -106,6 +108,7 @@ export async function buildSnapshot(db: Database, userId: string): Promise<Snaps
       activatedAt: spaces.activatedAt,
       createdAt: spaces.createdAt,
       updatedAt: spaces.updatedAt,
+      activeFinancialContextId: userProfiles.activeFinancialContextId,
     })
     .from(spaceMembers)
     .innerJoin(spaces, eq(spaceMembers.spaceId, spaces.id))
@@ -114,11 +117,14 @@ export async function buildSnapshot(db: Database, userId: string): Promise<Snaps
         eq(spaceMembers.userId, userId),
         eq(spaceMembers.status, "active"),
         isNull(spaces.archivedAt),
+        or(isNull(userProfiles.countryCode), eq(spaces.countryCode, userProfiles.countryCode)),
       ),
     );
 
   const spaceIds = memberships.map((space) => space.id);
-  if (spaceIds.length === 0) return { ...EMPTY };
+  if (spaceIds.length === 0) {
+    return { ...EMPTY };
+  }
 
   const [memberRows, categoryRows, budgetRows, accountRows, balanceRows, seriesRows, transactionRows, referenceRateRows] =
     await Promise.all([
@@ -218,6 +224,7 @@ export async function buildSnapshot(db: Database, userId: string): Promise<Snaps
           moneyAccountId: transactions.moneyAccountId,
           type: transactions.type,
           amountMinor: transactions.amountMinor,
+          accountingAmountMinorUsd: transactions.accountingAmountMinorUsd,
           currency: transactions.currency,
           title: transactions.title,
           occurredOn: transactions.occurredOn,
@@ -280,7 +287,8 @@ export async function buildSnapshot(db: Database, userId: string): Promise<Snaps
   }
 
   return {
-    spaces: memberships,
+    activeFinancialContextId: memberships[0]?.activeFinancialContextId ?? null,
+    spaces: memberships.map(({ activeFinancialContextId: _activeFinancialContextId, ...space }) => space),
     members: memberRows.map((row) => ({ ...row, displayName: row.displayName ?? "Usuario" })),
     categories: categoryRows.map((category) => ({
       ...category,
@@ -297,6 +305,7 @@ export async function buildSnapshot(db: Database, userId: string): Promise<Snaps
     transactions: transactionRows.map((transaction) => ({
       ...transaction,
       amountMinor: serializeMinorAmount(transaction.amountMinor),
+      accountingAmountMinorUsd: transaction.accountingAmountMinorUsd == null ? null : serializeMinorAmount(transaction.accountingAmountMinorUsd),
       exchangeSnapshot: exchangeSnapshotFromRows(ratesByTransaction.get(transaction.id), transaction.currency),
     })),
   };

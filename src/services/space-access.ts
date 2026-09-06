@@ -1,6 +1,6 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, or } from "drizzle-orm";
 import { createDb, type Database } from "../db/client";
-import { spaceMembers, spaces } from "../db/schema";
+import { spaceMembers, spaces, userProfiles } from "../db/schema";
 
 export type ActiveSpaceMembership = {
   spaceId: string;
@@ -29,12 +29,14 @@ export function buildActiveSpaceMembershipQuery(
     })
     .from(spaceMembers)
     .innerJoin(spaces, eq(spaceMembers.spaceId, spaces.id))
+    .innerJoin(userProfiles, eq(userProfiles.userId, spaceMembers.userId))
     .where(
       and(
         eq(spaceMembers.spaceId, spaceId),
         eq(spaceMembers.userId, userId),
         eq(spaceMembers.status, "active"),
         isNull(spaces.archivedAt),
+        or(isNull(userProfiles.countryCode), eq(spaces.countryCode, userProfiles.countryCode)),
       ),
     )
     .limit(1);

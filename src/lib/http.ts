@@ -47,6 +47,9 @@ const ERROR_STATUS = {
   OWNER_MUST_TRANSFER: 409,
   COUPLE_SPACE_LIMIT: 409,
   INVITATION_ALREADY_PENDING: 409,
+  SPACE_COUNTRY_MISMATCH: 409,
+  COUNTRY_CHANGE_BLOCKED_BY_SHARED_SPACE: 409,
+  VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED: 409,
   INTERNAL_SERVER_ERROR: 500,
   VENEZUELA_RATES_UNAVAILABLE: 502,
 } as const satisfies Record<string, ContentfulStatusCode>;
@@ -88,6 +91,9 @@ const DEFAULT_MESSAGES: Record<ErrorCode, string> = {
   OWNER_MUST_TRANSFER: "Transfer ownership before leaving.",
   COUPLE_SPACE_LIMIT: "You already have an active shared space.",
   INVITATION_ALREADY_PENDING: "There is already a pending invitation for this space.",
+  SPACE_COUNTRY_MISMATCH: "This member's country does not match the space.",
+  COUNTRY_CHANGE_BLOCKED_BY_SHARED_SPACE: "Your country cannot change while you belong to a shared space with another country.",
+  VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED: "Venezuela accounts must contain a single USD balance.",
   INTERNAL_SERVER_ERROR: "Internal server error.",
   VENEZUELA_RATES_UNAVAILABLE: "Venezuela rates are unavailable",
 };

@@ -15,6 +15,7 @@ export type ExchangeSnapshotRateDTO = {
   quoteCurrency: string;
   rate: string;
   convertedAmountMinor: string;
+  convertedCurrency: "USD" | "VES" | "EUR";
   observedAt: string | null;
 };
 export type ExchangeSnapshotDTO = {
@@ -25,6 +26,7 @@ export type ExchangeSnapshotDTO = {
 
 export type TransactionResponse = {
   id: string; type: "expense" | "income"; amountMinor: string; currency: string;
+  accountingAmountMinorUsd: string | null;
   title: string; occurredOn: string; categoryId: string; moneyAccountId: string | null;
   note: string | null;
   /** Quién lo creó. `null` en movimientos migrados antes de que el sync mandara autoría. */
@@ -39,15 +41,15 @@ export type TransactionResponse = {
 export type TransactionCursor = { occurredOn: string; createdAt: string; id: string };
 
 function selectFields() {
-  return { id: transactions.id, type: transactions.type, amountMinor: transactions.amountMinor,
+  return { id: transactions.id, type: transactions.type, amountMinor: transactions.amountMinor, accountingAmountMinorUsd: transactions.accountingAmountMinorUsd,
     currency: transactions.currency, title: transactions.title, occurredOn: transactions.occurredOn,
     categoryId: transactions.categoryId, moneyAccountId: transactions.moneyAccountId,
     note: transactions.note, createdBy: transactions.createdBy, recurrence: transactions.recurrence,
     recurrenceGroupId: transactions.recurrenceGroupId,
     recurrenceSeriesId: transactions.recurrenceSeriesId, createdAt: transactions.createdAt, updatedAt: transactions.updatedAt };
 }
-function serialize(row: Omit<TransactionResponse, "amountMinor" | "exchangeSnapshot"> & { amountMinor: bigint }): Omit<TransactionResponse, "exchangeSnapshot"> {
-  return { ...row, amountMinor: serializeMinorAmount(row.amountMinor) };
+function serialize(row: Omit<TransactionResponse, "amountMinor" | "accountingAmountMinorUsd" | "exchangeSnapshot"> & { amountMinor: bigint; accountingAmountMinorUsd: bigint | null }): Omit<TransactionResponse, "exchangeSnapshot"> {
+  return { ...row, amountMinor: serializeMinorAmount(row.amountMinor), accountingAmountMinorUsd: row.accountingAmountMinorUsd === null ? null : serializeMinorAmount(row.accountingAmountMinorUsd) };
 }
 
 /**
@@ -105,6 +107,7 @@ export function exchangeSnapshotFromRows(
       quoteCurrency: "VES",
       rate: row.rate,
       convertedAmountMinor: serializeMinorAmount(row.convertedAmountMinor),
+      convertedCurrency: row.displayCurrency as "USD" | "VES" | "EUR",
       observedAt: row.observedAt?.toISOString() ?? null,
     };
     if (row.rateSource === "BCV" || row.rateSource === "EURO" || row.rateSource === "CUSTOM") {
@@ -151,7 +154,7 @@ export async function findTransactionInSpace(db: Database, spaceId: string, tran
   return enriched;
 }
 
-export type CreateTransactionResult = { transaction: TransactionResponse | null; error?: "CUSTOM_RATE_NOT_FOUND" };
+export type CreateTransactionResult = { transaction: TransactionResponse | null; error?: "CUSTOM_RATE_NOT_FOUND" | "VENEZUELA_RATES_UNAVAILABLE" };
 
 export async function createTransaction(
   db: Database,
@@ -177,9 +180,10 @@ export async function createTransaction(
   // suelto en el spread lo descartaba en silencio y el movimiento quedaba sin
   // autor — el bug real detrás de "el movimiento se le atribuye a otro
   // usuario" en un espacio compartido.
+  const accountingAmountMinorUsd = accountingUsd(input.amountMinor, input.currency, snapshotResult.snapshot);
   const [row] = await db
     .insert(transactions)
-    .values({ ...transactionInput, createdBy: userId, recurrenceSeriesId: null })
+    .values({ ...transactionInput, createdBy: userId, recurrenceSeriesId: null, accountingAmountMinorUsd })
     .returning(selectFields());
 
   if (snapshotResult.snapshot) await insertReferenceRateRows(db, row.id, snapshotResult.snapshot);
@@ -187,7 +191,14 @@ export async function createTransaction(
   return { transaction: { ...serialize(row), exchangeSnapshot: snapshotToDTO(snapshotResult.snapshot) } };
 }
 
-export type UpdateTransactionResult = { transaction: TransactionResponse | null; error?: "CUSTOM_RATE_NOT_FOUND" };
+function accountingUsd(amountMinor: bigint, currency: string, snapshot: MovementSnapshot | null) {
+  if (currency === "USD") return amountMinor;
+  if (currency !== "VES") return null;
+  const row = snapshot?.rows.find((rate) => rate.rateSource === "BCV" && rate.displayCurrency === "USD");
+  return row?.convertedAmountMinor ?? null;
+}
+
+export type UpdateTransactionResult = { transaction: TransactionResponse | null; error?: "CUSTOM_RATE_NOT_FOUND" | "VENEZUELA_RATES_UNAVAILABLE" };
 
 export async function updateTransaction(
   db: Database,
@@ -203,6 +214,23 @@ export async function updateTransaction(
 
   const refreezeSnapshot = input.amountMinor !== undefined || input.currency !== undefined || input.occurredOn !== undefined || input.customRateId !== undefined;
 
+  // No mutar antes de poder congelar la equivalencia USD: una tasa caída o un
+  // CUSTOM inválido debe dejar el movimiento exactamente como estaba.
+  let preparedSnapshot: MovementSnapshot | null = null;
+  if (refreezeSnapshot) {
+    const [current] = await db.select(selectFields()).from(transactions)
+      .where(and(eq(transactions.id, input.transactionId), eq(transactions.spaceId, input.spaceId)));
+    if (!current) return { transaction: null };
+    const amountMinor = input.amountMinor ?? current.amountMinor;
+    const currency = input.currency ?? current.currency;
+    const snapshotResult = shouldAttemptSnapshot(currency, input.creatorCountryCode)
+      ? await buildMovementSnapshot(db, { userId: input.userId, amountMinor, currency, customRateId: input.customRateId })
+      : { snapshot: null as MovementSnapshot | null };
+    if (snapshotResult.error) return { transaction: null, error: snapshotResult.error };
+    preparedSnapshot = snapshotResult.snapshot;
+    values.accountingAmountMinorUsd = accountingUsd(amountMinor, currency, preparedSnapshot);
+  }
+
   const [row] = await db.update(transactions).set(values).where(and(eq(transactions.id, input.transactionId), eq(transactions.spaceId, input.spaceId))).returning(selectFields());
   if (!row) return { transaction: null };
 
@@ -211,21 +239,10 @@ export async function updateTransaction(
     return { transaction: enriched };
   }
 
-  const snapshotResult = shouldAttemptSnapshot(row.currency, input.creatorCountryCode)
-    ? await buildMovementSnapshot(db, {
-        userId: input.userId,
-        amountMinor: row.amountMinor,
-        currency: row.currency,
-        customRateId: input.customRateId,
-      })
-    : { snapshot: null as MovementSnapshot | null };
-
-  if (snapshotResult.error) return { transaction: null, error: snapshotResult.error };
-
   await db.delete(transactionReferenceRates).where(eq(transactionReferenceRates.transactionId, row.id));
-  if (snapshotResult.snapshot) await insertReferenceRateRows(db, row.id, snapshotResult.snapshot);
+  if (preparedSnapshot) await insertReferenceRateRows(db, row.id, preparedSnapshot);
 
-  return { transaction: { ...serialize(row), exchangeSnapshot: snapshotToDTO(snapshotResult.snapshot) } };
+  return { transaction: { ...serialize(row), exchangeSnapshot: snapshotToDTO(preparedSnapshot) } };
 }
 
 function shouldAttemptSnapshot(currency: string, creatorCountryCode: string | null): boolean {

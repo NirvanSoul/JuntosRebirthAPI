@@ -180,6 +180,7 @@ describe("Spaces service", () => {
     const insertedValues: Array<Record<string, unknown>> = [];
     const batch = vi.fn().mockResolvedValue([]);
     const db = {
+      select: vi.fn(() => ({ from: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) }) })),
       insert: vi.fn(() => ({
         values: (values: Record<string, unknown>) => {
           insertedValues.push(values);
@@ -218,6 +219,7 @@ describe("Spaces service", () => {
 
   it("leaves a couple space inactive until the invitation is accepted", async () => {
     const db = {
+      select: vi.fn(() => ({ from: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) }) })),
       insert: vi.fn(() => ({ values: (values: unknown) => ({ values }) })),
       batch: vi.fn().mockResolvedValue([]),
     } as unknown as Database;

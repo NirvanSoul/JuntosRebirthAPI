@@ -29,14 +29,14 @@ export type SpaceSyncResult = {
   moneyAccountCount: number;
   recurringSeriesCount: number;
   transactionCount: number;
-  transactions?: { localId: string; remoteId: string; updatedAt: string; exchangeSnapshot: ExchangeSnapshotDTO | null }[];
+  transactions?: { localId: string; remoteId: string; updatedAt: string; accountingAmountMinorUsd: string | null; exchangeSnapshot: ExchangeSnapshotDTO | null }[];
 };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 type Existing = { id: string; sourceInstallationId: string | null; sourceLocalId: string | null };
 type ExistingCategory = Existing & { templateKey?: string | null };
-type ExistingTransaction = Existing & { amountMinor: bigint; currency: string; occurredOn: string };
+type ExistingTransaction = Existing & { amountMinor: bigint; currency: string; occurredOn: string; accountingAmountMinorUsd: bigint | null };
 
 /**
  * Traduce los identificadores locales del dispositivo a los remotos, en el
@@ -131,11 +131,17 @@ export async function syncSpaceData(
   for (const transaction of payload.transactions) validateSyncedTransaction(transaction);
 
   const [space] = await db
-    .select({ currency: spaces.currency })
+    .select({ currency: spaces.currency, countryCode: spaces.countryCode })
     .from(spaces)
     .where(eq(spaces.id, spaceId))
     .limit(1);
   if (!space) throw new Error("SPACE_NOT_FOUND");
+  if (space.countryCode === "VE") {
+    for (const account of payload.moneyAccounts) validateVeSyncedAccount(account);
+    for (const transaction of payload.transactions) {
+      if (transaction.currency !== "USD" && transaction.currency !== "VES") throw new Error("INVALID_PAYLOAD");
+    }
+  }
 
   const [
     existingCategories,
@@ -177,6 +183,7 @@ export async function syncSpaceData(
           amountMinor: transactions.amountMinor,
           currency: transactions.currency,
           occurredOn: transactions.occurredOn,
+          accountingAmountMinorUsd: transactions.accountingAmountMinorUsd,
         })
         .from(transactions)
         .where(eq(transactions.spaceId, spaceId)),
@@ -467,6 +474,7 @@ export async function syncSpaceData(
       if (result.error) throw new Error(result.error);
       snapshot = result.snapshot;
     }
+    const accountingAmountMinorUsd = currency === "USD" ? amountMinor : snapshot?.rows.find((rate) => rate.rateSource === "BCV" && rate.displayCurrency === "USD")?.convertedAmountMinor ?? (regenerate ? null : existing?.accountingAmountMinorUsd ?? null);
 
     writes.push(
       db
@@ -479,6 +487,7 @@ export async function syncSpaceData(
           createdBy: stringOrNull(row.createdBy) ?? userId,
           type: transactionType(row.type),
           amountMinor,
+          accountingAmountMinorUsd,
           currency,
           title: text(row.title),
           occurredOn,
@@ -500,6 +509,7 @@ export async function syncSpaceData(
             moneyAccountId: sql`excluded.money_account_id`,
             type: sql`excluded.type`,
             amountMinor: sql`excluded.amount_minor`,
+            accountingAmountMinorUsd: sql`excluded.accounting_amount_minor_usd`,
             currency: sql`excluded.currency`,
             title: sql`excluded.title`,
             occurredOn: sql`excluded.occurred_on`,
@@ -529,6 +539,7 @@ export async function syncSpaceData(
       localId,
       remoteId: id,
       updatedAt: updatedAt.toISOString(),
+      accountingAmountMinorUsd: accountingAmountMinorUsd === null ? null : accountingAmountMinorUsd.toString(),
       exchangeSnapshot: regenerate
         ? exchangeSnapshotFromRows(snapshot?.rows, currency)
         : exchangeSnapshotFromRows(priorRates, existing?.currency ?? currency),
@@ -566,6 +577,16 @@ function validateSyncedTransaction(row: Row) {
   if (Object.keys(row).some((field) => !allowedFields.has(field))) throw new Error("INVALID_PAYLOAD");
   if (Object.prototype.hasOwnProperty.call(row, "customRateId") && customRateIdValue(row.customRateId) === undefined) {
     throw new Error("INVALID_PAYLOAD");
+  }
+}
+
+/** Las cuentas de sync son otra puerta de escritura, no un bypass de VE. */
+function validateVeSyncedAccount(row: Row) {
+  if (Boolean(row.isArchived)) return;
+  if (row.currency !== "USD") throw new Error("VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED");
+  const balances = Array.isArray(row.balances) ? row.balances : [];
+  if (balances.length !== 1 || !balances[0] || typeof balances[0] !== "object" || (balances[0] as Row).currency !== "USD") {
+    throw new Error("VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED");
   }
 }
 

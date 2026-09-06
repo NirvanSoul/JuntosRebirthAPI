@@ -1,12 +1,13 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, or } from "drizzle-orm";
 import { createDb, type Database } from "../db/client";
-import { spaceMembers, spaces } from "../db/schema";
+import { spaceMembers, spaces, userProfiles } from "../db/schema";
 
 export type SpaceSummary = {
   id: string;
   name: string;
   type: "personal" | "couple" | "other";
   currency: string;
+  countryCode?: string | null;
   timezone: string;
   role: "owner" | "admin" | "member";
   activatedAt: Date | null;
@@ -34,6 +35,7 @@ export function buildListActiveSpacesQuery(db: Database, userId: string) {
       name: spaces.name,
       type: spaces.type,
       currency: spaces.currency,
+      countryCode: spaces.countryCode,
       timezone: spaces.timezone,
       role: spaceMembers.role,
       activatedAt: spaces.activatedAt,
@@ -41,11 +43,13 @@ export function buildListActiveSpacesQuery(db: Database, userId: string) {
     })
     .from(spaceMembers)
     .innerJoin(spaces, eq(spaceMembers.spaceId, spaces.id))
+    .innerJoin(userProfiles, eq(userProfiles.userId, spaceMembers.userId))
     .where(
       and(
         eq(spaceMembers.userId, userId),
         eq(spaceMembers.status, "active"),
         isNull(spaces.archivedAt),
+        or(isNull(userProfiles.countryCode), eq(spaces.countryCode, userProfiles.countryCode)),
       ),
     );
 }
@@ -67,12 +71,14 @@ export async function createSpaceWithOwner(
   // Las plantillas pertenecen al alta de la cuenta (`POST /v1/bootstrap`, que
   // siembra el espacio personal); en el resto, las categorías las trae quien
   // las crea desde la app o el primer `sync` del espacio.
+  const [ownerProfile] = await db.select({ countryCode: userProfiles.countryCode }).from(userProfiles).where(eq(userProfiles.userId, userId)).limit(1);
   await db.batch([
     db.insert(spaces).values({
       id,
       name: input.name,
       type: input.type,
       currency: input.currency,
+      countryCode: ownerProfile?.countryCode ?? null,
       timezone: input.timezone,
       createdBy: userId,
       activatedAt,
@@ -95,6 +101,7 @@ export async function createSpaceWithOwner(
     name: input.name,
     type: input.type,
     currency: input.currency,
+    countryCode: ownerProfile?.countryCode ?? null,
     timezone: input.timezone,
     role: "owner",
     activatedAt,

@@ -9,7 +9,11 @@ export function mayManageMembers(role: "owner" | "admin" | "member") { return ro
 export async function createInvitation(db: Database, input: { spaceId: string; invitedBy: string; email: string; role: "admin" | "member" }) {
   const token = encodeToken();
   const tokenHash = await hashToken(token);
-  const [knownUser] = await db.select({ id: user.id }).from(user).where(eq(user.email, input.email)).limit(1);
+  const [knownUser] = await db.select({ id: user.id, countryCode: userProfiles.countryCode }).from(user).leftJoin(userProfiles, eq(userProfiles.userId, user.id)).where(eq(user.email, input.email)).limit(1);
+  const [spaceCountry] = await db.select({ countryCode: spaces.countryCode }).from(spaces).where(eq(spaces.id, input.spaceId)).limit(1);
+  // Para direcciones aún sin cuenta no existe país que contrastar; se valida de
+  // nuevo al aceptar y la invitación permanece íntegra si no coincide.
+  if (knownUser && knownUser.countryCode !== spaceCountry?.countryCode) throw new Error("SPACE_COUNTRY_MISMATCH");
   // Se puede invitar a alguien que todavía no tiene cuenta: la invitación queda
   // pendiente por correo y `claimEmailInvitations` la vincula cuando esa persona
   // se registre. La fuente de verdad es `space_invitations`, no el usuario.
@@ -77,6 +81,8 @@ export async function acceptInvitation(db: Database, userId: string, token: stri
     WITH accepted AS (
       UPDATE space_invitations SET status='accepted', accepted_at=now(), invitee_user_id=${userId}, updated_at=now()
       WHERE token_hash=${tokenHash} AND status='pending' AND expires_at > now()
+        AND (SELECT country_code FROM user_profiles WHERE user_id=${userId}) IS NOT DISTINCT FROM
+            (SELECT country_code FROM spaces WHERE id=space_invitations.space_id)
       RETURNING space_id, role
     ), membership AS (
       INSERT INTO space_members (space_id, user_id, role, status, joined_at, created_at, updated_at)
@@ -100,6 +106,8 @@ export async function acceptLinkedInvitation(db: Database, userId: string, invit
     WITH accepted AS (
       UPDATE space_invitations SET status='accepted', accepted_at=now(), updated_at=now()
       WHERE id=${invitationId} AND invitee_user_id=${userId} AND status='pending' AND expires_at > now()
+        AND (SELECT country_code FROM user_profiles WHERE user_id=${userId}) IS NOT DISTINCT FROM
+            (SELECT country_code FROM spaces WHERE id=space_invitations.space_id)
       RETURNING space_id, role
     ), membership AS (
       INSERT INTO space_members (space_id, user_id, role, status, joined_at, created_at, updated_at)
@@ -115,6 +123,22 @@ export async function acceptLinkedInvitation(db: Database, userId: string, invit
     ) SELECT space_id FROM membership
   `);
   return result.rows[0]?.space_id as string | undefined;
+}
+
+/** Used by the HTTP layer to distinguish a rejected country from an invalid token. */
+export async function invitationCountryMatches(db: Database, userId: string, invitationId?: string, token?: string) {
+  const tokenHash = token ? await hashToken(token) : null;
+  const result = await db.execute(sql`
+    SELECT (p.country_code IS NOT DISTINCT FROM s.country_code) AS matches
+    FROM space_invitations i
+    JOIN spaces s ON s.id=i.space_id
+    LEFT JOIN user_profiles p ON p.user_id=${userId}
+    WHERE ${invitationId ? sql`i.id=${invitationId}` : sql`i.token_hash=${tokenHash}`}
+      AND i.status='pending' AND i.expires_at > now()
+    LIMIT 1
+  `);
+  const row = result.rows[0] as { matches: boolean } | undefined;
+  return row?.matches ?? true;
 }
 
 export async function previewInvitation(db: Database, token: string) {

@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { bootstrapAccount, findCurrentUser } from "../../src/services/account";
+import { bootstrapAccount, findCurrentUser, updateProfile } from "../../src/services/account";
 import { createSpaceWithOwner } from "../../src/services/spaces";
 import { syncSpaceData } from "../../src/services/space-sync";
 import { buildSnapshot } from "../../src/services/sync-snapshot";
@@ -14,10 +14,11 @@ const EARLIER = "2026-08-29T08:00:00.000Z";
 
 afterAll(cleanupTestUsers);
 
-async function sharedSpace(label: string) {
+async function sharedSpace(label: string, countryCode?: string) {
   const userId = await createTestUser(db, label);
   const currentUser = await findCurrentUser(db, userId);
   await bootstrapAccount(db, currentUser!, "Europe/Madrid");
+  if (countryCode) await updateProfile(db, userId, { countryCode });
   const space = await createSpaceWithOwner(db, userId, {
     name: "Juntos",
     type: "other",
@@ -88,6 +89,25 @@ function transactionRow(overrides: Record<string, unknown> = {}) {
 }
 
 describe("space bulk sync against PostgreSQL", () => {
+  it("does not let offline sync bypass Venezuela's single-USD-account rule", async () => {
+    const { userId, spaceId } = await sharedSpace("sync-ve-account", "VE");
+
+    await expect(syncSpaceData(db, spaceId, userId, {
+      installationId: "install-ve",
+      categories: [], recurringSeries: [], transactions: [],
+      moneyAccounts: [accountRow()],
+    })).rejects.toThrow("VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED");
+
+    await expect(syncSpaceData(db, spaceId, userId, {
+      installationId: "install-ve",
+      categories: [], recurringSeries: [], transactions: [],
+      moneyAccounts: [accountRow({
+        currency: "USD",
+        balances: [{ currency: "USD", openingBalanceMinor: 100000, position: 0 }],
+      })],
+    })).resolves.toMatchObject({ moneyAccountCount: 1 });
+  });
+
   it("is idempotent: pushing the same batch twice creates one row each", async () => {
     const { userId, spaceId } = await sharedSpace("sync-idem");
     const batch = {

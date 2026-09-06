@@ -28,6 +28,7 @@ describe("account snapshot", () => {
     const snapshot = await buildSnapshot(fakeDatabase([[]]), "user-1");
 
     expect(snapshot).toEqual({
+      activeFinancialContextId: null,
       spaces: [],
       members: [],
       categories: [],
@@ -49,7 +50,8 @@ describe("account snapshot", () => {
         { moneyAccountId: "acc-1", currency: "EUR", openingBalanceMinor: 100000n, displayOrder: 0 },
       ],
       [{ id: "ser-1", spaceId: "space-1", amountMinor: 900n, createdBy: "user-author-ser" }],
-      [{ id: "tx-1", spaceId: "space-1", amountMinor: 1250n, note: "Con Ana", createdBy: "user-author-tx", recurrence: "custom", recurrenceGroupId: "group-9" }],
+      [{ id: "tx-1", spaceId: "space-1", amountMinor: 1250n, accountingAmountMinorUsd: 2500n, currency: "VES", note: "Con Ana", createdBy: "user-author-tx", recurrence: "custom", recurrenceGroupId: "group-9" }],
+      [{ transactionId: "tx-1", rateSource: "BCV", displayCurrency: "USD", referenceAsset: "USD", rate: "50.0000000000", convertedAmountMinor: 2500n, observedAt: NOW }],
     ]);
 
     const snapshot = await buildSnapshot(db, "user-1");
@@ -85,10 +87,14 @@ describe("account snapshot", () => {
     // Los campos de paridad del ledger tienen que llegar al restaurar.
     expect(snapshot.transactions[0]).toMatchObject({
       amountMinor: "1250",
+      accountingAmountMinorUsd: "2500",
       note: "Con Ana",
       createdBy: "user-author-tx",
       recurrence: "custom",
       recurrenceGroupId: "group-9",
+    });
+    expect(snapshot.transactions[0]?.exchangeSnapshot).toMatchObject({
+      rates: { BCV: { convertedAmountMinor: "2500", convertedCurrency: "USD" } },
     });
   });
 });

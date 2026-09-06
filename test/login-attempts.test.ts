@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { Database } from "../src/db/client";
 import {
   clearFailedAttempts,
+  LOCK_DURATION_MS,
   lockedUntil,
   MAX_FAILED_ATTEMPTS,
   normalizeEmail,
@@ -14,6 +15,11 @@ function databaseReturning(rows: unknown[]) {
 }
 
 describe("login attempt lockout", () => {
+  it("allows fifteen failures and locks for exactly five minutes", () => {
+    expect(MAX_FAILED_ATTEMPTS).toBe(15);
+    expect(LOCK_DURATION_MS).toBe(5 * 60 * 1000);
+  });
+
   it("normalizes the email so casing and spacing cannot bypass the counter", () => {
     expect(normalizeEmail("  Ana@Example.COM ")).toBe("ana@example.com");
     expect(normalizeEmail("")).toBeNull();
@@ -47,6 +53,7 @@ describe("login attempt lockout", () => {
     expect(sql).toContain("ON CONFLICT");
     expect(sql).toContain("a@b.c");
     expect(sql).toContain(String(MAX_FAILED_ATTEMPTS));
+    expect(sql).toContain(String(LOCK_DURATION_MS));
   });
 
   it("forgets the history after a successful sign-in", async () => {

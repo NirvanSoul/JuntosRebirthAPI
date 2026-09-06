@@ -50,7 +50,9 @@ export function createAccountRoute(deps: Dependencies = defaults) {
       if (!currentUser) return errorResponse(c, "UNAUTHORIZED");
       const result = await deps.bootstrapAccount(db, currentUser, input.timezone);
       return c.json({ data: { user: currentUser, ...result } });
-    } catch {
+    } catch (error) {
+      if (error instanceof Error && error.message === "COUNTRY_CHANGE_BLOCKED_BY_SHARED_SPACE") return errorResponse(c, "COUNTRY_CHANGE_BLOCKED_BY_SHARED_SPACE");
+      if (error instanceof Error && error.message === "VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED") return errorResponse(c, "VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED");
       return errorResponse(c, "INTERNAL_SERVER_ERROR");
     }
   });
@@ -66,6 +68,7 @@ export function createAccountRoute(deps: Dependencies = defaults) {
           user: currentUser,
           profile: state.profile,
           personalSpaceId: state.personalSpaceId,
+          activeFinancialContext: state.activeFinancialContext,
           bootstrapRequired: !state.profile || !state.personalSpaceId,
         },
       });
@@ -95,7 +98,15 @@ export function createAccountRoute(deps: Dependencies = defaults) {
         input,
       );
       if (!profile) return errorResponse(c, "PROFILE_NOT_FOUND");
-      return c.json({ data: { profile } });
+      return c.json({
+        data: {
+          profile,
+          activeFinancialContext: input.countryCode !== undefined
+            ? (await deps.getAccountState(deps.createDb(c.env.DATABASE_URL), c.get("currentUserId"))).activeFinancialContext
+            : null,
+          leftSharedSpaceIds: [],
+        },
+      });
     } catch {
       return errorResponse(c, "INTERNAL_SERVER_ERROR");
     }

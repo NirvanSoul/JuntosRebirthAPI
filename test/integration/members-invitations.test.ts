@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { bootstrapAccount, findCurrentUser } from "../../src/services/account";
+import { bootstrapAccount, findCurrentUser, getAccountState, updateProfile } from "../../src/services/account";
 import { createSpaceWithOwner } from "../../src/services/spaces";
 import {
   acceptInvitation,
@@ -13,7 +13,7 @@ import {
 } from "../../src/services/invitations";
 import { leaveSpace, listMembers, removeMember, setMemberRole } from "../../src/services/members";
 import { spaceInvitations, spaceMembers, spaces, user } from "../../src/db/schema";
-import { cleanupTestUsers, createTestUser, testDb, TEST_USER_PREFIX } from "./harness";
+import { cleanupTestUsers, createTestUser, registerTestUser, testDb, TEST_USER_PREFIX } from "./harness";
 
 const db = testDb();
 
@@ -37,6 +37,59 @@ async function coupleSpace(ownerId: string) {
 }
 
 describe("invitations against PostgreSQL", () => {
+  it("does not consume an invitation or create a membership when countries differ", async () => {
+    const owner = await person("inv-country-owner");
+    const partner = await person("inv-country-partner");
+    await updateProfile(db, owner.userId, { countryCode: "ES" });
+    await updateProfile(db, partner.userId, { countryCode: "VE" });
+    const ownerState = await getAccountState(db, owner.userId);
+    const [personal] = await db.select({ countryCode: spaces.countryCode }).from(spaces)
+      .where(eq(spaces.id, ownerState.personalSpaceId!));
+    expect(personal?.countryCode).toBe("ES");
+    const space = await coupleSpace(owner.userId);
+
+    // Una persona ya conocida se rechaza al invitar.
+    await expect(createInvitation(db, {
+      spaceId: space.id, invitedBy: owner.userId, email: partner.email, role: "member",
+    })).rejects.toThrow("SPACE_COUNTRY_MISMATCH");
+
+    // La misma protección vive en la aceptación para invitaciones creadas
+    // antes de que la persona tuviera perfil/país.
+    const pending = await createInvitation(db, {
+      spaceId: space.id,
+      invitedBy: owner.userId,
+      email: `itest-country-later-${Date.now()}@integration.test`,
+      role: "member",
+    });
+    const [later] = await db.insert(user).values({
+      id: `${TEST_USER_PREFIX}country-later-${Date.now()}`,
+      name: "Luego", email: pending.invitation.email, emailVerified: true,
+    }).returning({ id: user.id });
+    registerTestUser(later!.id);
+    const current = await findCurrentUser(db, later!.id);
+    await bootstrapAccount(db, current!, "Europe/Madrid");
+    await updateProfile(db, later!.id, { countryCode: "VE" });
+
+    expect(await acceptInvitation(db, later!.id, pending.token)).toBeUndefined();
+    const [stored] = await db.select({ status: spaceInvitations.status }).from(spaceInvitations).where(eq(spaceInvitations.id, pending.invitation.id));
+    expect(stored?.status).toBe("pending");
+    expect((await listMembers(db, space.id)).map((member) => member.userId)).not.toContain(later!.id);
+  });
+
+  it("keeps a profile unchanged when a shared-space country change is blocked", async () => {
+    const owner = await person("country-change-owner");
+    const partner = await person("country-change-partner");
+    await updateProfile(db, owner.userId, { countryCode: "ES" });
+    await updateProfile(db, partner.userId, { countryCode: "ES" });
+    const space = await coupleSpace(owner.userId);
+    const invite = await createInvitation(db, { spaceId: space.id, invitedBy: owner.userId, email: partner.email, role: "member" });
+    await acceptInvitation(db, partner.userId, invite.token);
+
+    await expect(updateProfile(db, partner.userId, { countryCode: "VE" }))
+      .rejects.toThrow("COUNTRY_CHANGE_BLOCKED_BY_SHARED_SPACE");
+    expect((await getAccountState(db, partner.userId)).profile?.countryCode).toBe("ES");
+  });
+
   it("activates the couple space only when the invitation is accepted", async () => {
     const owner = await person("inv-owner");
     const partner = await person("inv-partner");
@@ -98,6 +151,7 @@ describe("invitations against PostgreSQL", () => {
         emailVerified: true,
       })
       .returning({ id: user.id });
+    registerTestUser(newcomer!.id);
     const currentUser = await findCurrentUser(db, newcomer!.id);
     await bootstrapAccount(db, currentUser!, "Europe/Madrid");
 
