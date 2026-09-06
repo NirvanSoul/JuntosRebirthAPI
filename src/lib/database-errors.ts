@@ -5,6 +5,9 @@ type DatabaseError = {
   code?: unknown;
   message?: unknown;
   cause?: unknown;
+  table?: unknown;
+  column?: unknown;
+  constraint?: unknown;
 };
 
 function databaseErrorCodes(error: unknown): string[] {
@@ -16,6 +19,19 @@ function databaseErrorCodes(error: unknown): string[] {
     current = (current as DatabaseError).cause;
   }
   return codes;
+}
+
+function databaseErrorIdentifiers(error: unknown): string[] {
+  const identifiers: string[] = [];
+  let current = error;
+  for (let depth = 0; depth < 3 && current && typeof current === "object"; depth += 1) {
+    const record = current as DatabaseError;
+    for (const value of [record.table, record.column, record.constraint]) {
+      if (typeof value === "string") identifiers.push(value);
+    }
+    current = record.cause;
+  }
+  return identifiers;
 }
 
 /**
@@ -36,6 +52,7 @@ export function logDatabaseFailure(operation: string, error: unknown): void {
     operation,
     errorName: error instanceof Error ? error.name : typeof error,
     databaseCodes: databaseErrorCodes(error),
+    databaseIdentifiers: databaseErrorIdentifiers(error),
     schemaOutdated: isDatabaseSchemaOutdated(error),
   }));
 }

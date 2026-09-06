@@ -38,6 +38,20 @@ healthRoute.get("/health/db", async (c) => {
           WHERE table_schema = 'public'
             AND table_name = 'user_profiles'
             AND column_name = 'active_financial_context_id'
+        )
+        AND EXISTS (
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'spaces'
+            AND column_name = 'country_code'
+        )
+        AND EXISTS (
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'transactions'
+            AND column_name = 'accounting_amount_minor_usd'
         ) AS schema_current
     `);
     const rows = Array.isArray(result) ? result : result.rows;
