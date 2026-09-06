@@ -1,4 +1,4 @@
-ALTER TABLE "spaces" ADD COLUMN "country_code" varchar(2);
+ALTER TABLE "spaces" ADD COLUMN IF NOT EXISTS "country_code" varchar(2);
 --> statement-breakpoint
 UPDATE "spaces" s
 SET "country_code" = p."country_code"

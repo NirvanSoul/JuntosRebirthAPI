@@ -7,9 +7,10 @@
     "dev": "wrangler dev",
     "deploy": "npm run deploy:production",
     "deploy:worker": "wrangler deploy",
-    "deploy:production": "npm run db:migrate && npm run deploy:worker",
+    "deploy:production": "node scripts/deploy-production.mjs",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
+    "db:migrate:production": "node scripts/migrate.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts"
