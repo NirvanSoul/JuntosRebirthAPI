@@ -1,7 +1,7 @@
 import { Hono, type MiddlewareHandler } from "hono";
 import { createDb } from "../db/client";
 import { errorResponse, type ErrorCode } from "../lib/http";
-import { databaseErrorResponse, isDatabaseSchemaOutdated } from "../lib/database-errors";
+import { databaseErrorResponse, isDatabaseSchemaOutdated, logDatabaseFailure } from "../lib/database-errors";
 import { parseBody } from "../lib/validation";
 import type { AuthVariables } from "../middleware/auth";
 import {
@@ -44,7 +44,7 @@ export function createSnapshotRoute(
       );
       return c.json({ data: snapshot });
     } catch (error) {
-      console.error("Snapshot failed:", error);
+      logDatabaseFailure("sync.snapshot", error);
       return databaseErrorResponse(c, error);
     }
   });
@@ -82,6 +82,7 @@ export function createSpaceSyncRoute(
       );
       return c.json({ data: result });
     } catch (error: any) {
+      logDatabaseFailure("sync.space", error);
       console.error(
         "Space sync failed:",
         error?.message,

@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { errorResponse } from "../lib/http";
-import { databaseErrorResponse } from "../lib/database-errors";
+import { databaseErrorResponse, logDatabaseFailure } from "../lib/database-errors";
 import { boundedString, nullableString, parseBody } from "../lib/validation";
 import { normalizeCurrency } from "../lib/currency";
 import { normalizeCountryCode } from "../lib/country";
@@ -52,6 +52,7 @@ export function createAccountRoute(deps: Dependencies = defaults) {
       const result = await deps.bootstrapAccount(db, currentUser, input.timezone);
       return c.json({ data: { user: currentUser, ...result } });
     } catch (error) {
+      logDatabaseFailure("account.bootstrap", error);
       if (error instanceof Error && error.message === "COUNTRY_CHANGE_BLOCKED_BY_SHARED_SPACE") return errorResponse(c, "COUNTRY_CHANGE_BLOCKED_BY_SHARED_SPACE");
       if (error instanceof Error && error.message === "VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED") return errorResponse(c, "VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED");
       return databaseErrorResponse(c, error);
@@ -74,6 +75,7 @@ export function createAccountRoute(deps: Dependencies = defaults) {
         },
       });
     } catch (error) {
+      logDatabaseFailure("account.me", error);
       return databaseErrorResponse(c, error);
     }
   });
@@ -85,6 +87,7 @@ export function createAccountRoute(deps: Dependencies = defaults) {
       const countryCode = state.profile?.countryCode ?? null;
       return c.json({ data: { countryCode, features: deriveCapabilities(countryCode) } });
     } catch (error) {
+      logDatabaseFailure("account.capabilities", error);
       return databaseErrorResponse(c, error);
     }
   });
@@ -109,6 +112,7 @@ export function createAccountRoute(deps: Dependencies = defaults) {
         },
       });
     } catch (error) {
+      logDatabaseFailure("account.profile", error);
       return databaseErrorResponse(c, error);
     }
   });

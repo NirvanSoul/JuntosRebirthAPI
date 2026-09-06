@@ -29,7 +29,22 @@ healthRoute.get("/health/db", async (c) => {
     }
 
     const db = createDb(databaseUrl);
-    await db.execute(sql`SELECT 1`);
+    const result = await db.execute(sql`
+      SELECT
+        to_regclass('public.financial_contexts') IS NOT NULL
+        AND EXISTS (
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'user_profiles'
+            AND column_name = 'active_financial_context_id'
+        ) AS schema_current
+    `);
+    const rows = Array.isArray(result) ? result : result.rows;
+    if (!rows[0]?.schema_current) {
+      console.error("Database schema is behind the deployed Worker");
+      return c.json({ status: "error", database: "schema_outdated" }, 503);
+    }
 
     return c.json(
       {

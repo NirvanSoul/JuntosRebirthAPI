@@ -27,7 +27,7 @@ describe("Health Route", () => {
     });
 
     it("returns 200 and connected when db execute succeeds", async () => {
-      const mockExecute = vi.fn().mockResolvedValue([{ "?column?": 1 }]);
+      const mockExecute = vi.fn().mockResolvedValue({ rows: [{ schema_current: true }] });
       vi.spyOn(client, "createDb").mockReturnValue({
         execute: mockExecute,
       } as unknown as client.Database);
@@ -45,6 +45,21 @@ describe("Health Route", () => {
         database: "connected",
       });
       expect(mockExecute).toHaveBeenCalled();
+    });
+
+    it("returns 503 when the connected database is behind the Worker schema", async () => {
+      vi.spyOn(client, "createDb").mockReturnValue({
+        execute: vi.fn().mockResolvedValue({ rows: [{ schema_current: false }] }),
+      } as unknown as client.Database);
+
+      const res = await app.request(
+        "/health/db",
+        {},
+        { DATABASE_URL: "postgresql://user:pass@ep-test.neon.tech/neondb" },
+      );
+
+      expect(res.status).toBe(503);
+      await expect(res.json()).resolves.toEqual({ status: "error", database: "schema_outdated" });
     });
 
     it("returns 500 when db connection fails without exposing secrets", async () => {
