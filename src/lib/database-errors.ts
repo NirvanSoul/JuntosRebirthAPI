@@ -29,9 +29,16 @@ function databaseErrorIdentifiers(error: unknown): string[] {
     for (const value of [record.table, record.column, record.constraint]) {
       if (typeof value === "string") identifiers.push(value);
     }
+    // Neon no rellena siempre `column`/`table` para 42703/42P01, pero su
+    // mensaje contiene el identificador. Extraemos únicamente ese token
+    // técnico, nunca la consulta completa ni sus parámetros.
+    if (typeof record.message === "string") {
+      const match = /(?:column|relation)\s+"?([a-zA-Z_][a-zA-Z0-9_.]*)"?\s+does not exist/i.exec(record.message);
+      if (match?.[1]) identifiers.push(match[1]);
+    }
     current = record.cause;
   }
-  return identifiers;
+  return [...new Set(identifiers)];
 }
 
 /**
