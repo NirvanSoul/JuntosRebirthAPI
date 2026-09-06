@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "deploy:production": "npm run db:migrate && npm run deploy",
+    "deploy": "npm run deploy:production",
+    "deploy:worker": "wrangler deploy",
+    "deploy:production": "npm run db:migrate && npm run deploy:worker",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "typecheck": "tsc --noEmit",

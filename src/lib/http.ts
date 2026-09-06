@@ -50,6 +50,7 @@ const ERROR_STATUS = {
   SPACE_COUNTRY_MISMATCH: 409,
   COUNTRY_CHANGE_BLOCKED_BY_SHARED_SPACE: 409,
   VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED: 409,
+  DATABASE_SCHEMA_OUTDATED: 503,
   INTERNAL_SERVER_ERROR: 500,
   VENEZUELA_RATES_UNAVAILABLE: 502,
 } as const satisfies Record<string, ContentfulStatusCode>;
@@ -94,6 +95,7 @@ const DEFAULT_MESSAGES: Record<ErrorCode, string> = {
   SPACE_COUNTRY_MISMATCH: "This member's country does not match the space.",
   COUNTRY_CHANGE_BLOCKED_BY_SHARED_SPACE: "Your country cannot change while you belong to a shared space with another country.",
   VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED: "Venezuela accounts must contain a single USD balance.",
+  DATABASE_SCHEMA_OUTDATED: "Service is updating. Try again shortly.",
   INTERNAL_SERVER_ERROR: "Internal server error.",
   VENEZUELA_RATES_UNAVAILABLE: "Venezuela rates are unavailable",
 };

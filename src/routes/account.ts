@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { errorResponse } from "../lib/http";
+import { databaseErrorResponse } from "../lib/database-errors";
 import { boundedString, nullableString, parseBody } from "../lib/validation";
 import { normalizeCurrency } from "../lib/currency";
 import { normalizeCountryCode } from "../lib/country";
@@ -53,7 +54,7 @@ export function createAccountRoute(deps: Dependencies = defaults) {
     } catch (error) {
       if (error instanceof Error && error.message === "COUNTRY_CHANGE_BLOCKED_BY_SHARED_SPACE") return errorResponse(c, "COUNTRY_CHANGE_BLOCKED_BY_SHARED_SPACE");
       if (error instanceof Error && error.message === "VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED") return errorResponse(c, "VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED");
-      return errorResponse(c, "INTERNAL_SERVER_ERROR");
+      return databaseErrorResponse(c, error);
     }
   });
 
@@ -72,8 +73,8 @@ export function createAccountRoute(deps: Dependencies = defaults) {
           bootstrapRequired: !state.profile || !state.personalSpaceId,
         },
       });
-    } catch {
-      return errorResponse(c, "INTERNAL_SERVER_ERROR");
+    } catch (error) {
+      return databaseErrorResponse(c, error);
     }
   });
 
@@ -83,8 +84,8 @@ export function createAccountRoute(deps: Dependencies = defaults) {
       const state = await deps.getAccountState(db, c.get("currentUserId"));
       const countryCode = state.profile?.countryCode ?? null;
       return c.json({ data: { countryCode, features: deriveCapabilities(countryCode) } });
-    } catch {
-      return errorResponse(c, "INTERNAL_SERVER_ERROR");
+    } catch (error) {
+      return databaseErrorResponse(c, error);
     }
   });
 
@@ -107,8 +108,8 @@ export function createAccountRoute(deps: Dependencies = defaults) {
           leftSharedSpaceIds: [],
         },
       });
-    } catch {
-      return errorResponse(c, "INTERNAL_SERVER_ERROR");
+    } catch (error) {
+      return databaseErrorResponse(c, error);
     }
   });
 

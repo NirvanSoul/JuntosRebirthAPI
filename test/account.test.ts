@@ -82,6 +82,22 @@ describe("Account routes", () => {
     });
   });
 
+  it("identifies an unapplied database migration instead of returning a generic 500", async () => {
+    const { testApp, deps } = createTestApp();
+    deps.bootstrapAccount.mockRejectedValueOnce({ code: "42P01" });
+
+    const response = await testApp.request("/v1/bootstrap", {
+      method: "POST",
+      body: JSON.stringify({ timezone: "Europe/Madrid" }),
+    }, bindings);
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Retry-After")).toBe("60");
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "DATABASE_SCHEMA_OUTDATED" },
+    });
+  });
+
   it.each(["GMT+2", "not/a-zone", ""])('rejects invalid bootstrap timezone %j', async (timezone) => {
     const { testApp, deps } = createTestApp();
     const response = await testApp.request("/v1/bootstrap", { method: "POST", body: JSON.stringify({ timezone }) }, bindings);

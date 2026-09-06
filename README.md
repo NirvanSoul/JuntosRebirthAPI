@@ -79,7 +79,9 @@ juntoss-api/
 ## Despliegue en Cloudflare Workers
 
 Para producción, define `DATABASE_URL` en el entorno de CI o en la terminal y
-usa el comando que aplica migraciones antes de publicar el Worker:
+usa el comando de proyecto. Tanto `deploy` como `deploy:production` aplican
+las migraciones antes de publicar el Worker; no ejecutes `wrangler deploy`
+directamente, porque omite ese paso:
 
 ```bash
 npm run deploy:production
