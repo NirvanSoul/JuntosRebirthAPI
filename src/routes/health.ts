@@ -43,6 +43,13 @@ healthRoute.get("/health/db", async (c) => {
           SELECT 1
           FROM information_schema.columns
           WHERE table_schema = 'public'
+            AND table_name = 'user_profiles'
+            AND column_name = 'country_code'
+        )
+        AND EXISTS (
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_schema = 'public'
             AND table_name = 'spaces'
             AND column_name = 'country_code'
         )
