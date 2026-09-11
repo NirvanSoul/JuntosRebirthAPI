@@ -1,8 +1,41 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Database } from "../src/db/client";
 import { buildSnapshot } from "../src/services/sync-snapshot";
+import { createSnapshotRoute } from "../src/routes/sync";
 
 const NOW = new Date("2026-08-29T10:00:00.000Z");
+
+describe("snapshot route database failures", () => {
+  it.each(["42P01", "42703"])("returns a retryable 503 for PostgreSQL %s wrapped by Drizzle", async (code) => {
+    const route = createSnapshotRoute({
+      createDb: vi.fn(),
+      buildSnapshot: vi.fn().mockRejectedValue({
+        cause: { code, message: 'column "user_profiles.country_code" does not exist' },
+      }),
+    });
+
+    const response = await route.request("/snapshot", {}, { DATABASE_URL: "unused" });
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Retry-After")).toBe("60");
+    expect(await response.text()).toContain("DATABASE_SCHEMA_OUTDATED");
+  });
+
+  it("keeps unrelated failures as internal errors without leaking details", async () => {
+    const route = createSnapshotRoute({
+      createDb: vi.fn(),
+      buildSnapshot: vi.fn().mockRejectedValue(new Error("private database detail")),
+    });
+
+    const response = await route.request("/snapshot", {}, { DATABASE_URL: "unused" });
+
+    expect(response.status).toBe(500);
+    expect(response.headers.get("Retry-After")).toBeNull();
+    const body = await response.text();
+    expect(body).toContain("INTERNAL_SERVER_ERROR");
+    expect(body).not.toContain("private database detail");
+  });
+});
 
 /** Devuelve las lecturas en el orden del servicio: espacios, miembros y luego las cinco colecciones. */
 function fakeDatabase(reads: unknown[][]) {
@@ -29,6 +62,7 @@ describe("account snapshot", () => {
 
     expect(snapshot).toEqual({
       activeFinancialContextId: null,
+      serverTime: expect.any(String),
       spaces: [],
       members: [],
       categories: [],

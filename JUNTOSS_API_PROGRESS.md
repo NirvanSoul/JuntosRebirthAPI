@@ -298,3 +298,9 @@ el voto anterior en vez del recién escrito. Los tres están corregidos y cubier
   `/v1/rates/venezuela` vuelve a consultar el BCV en cada petición.
 - Faltan `GET`/`PATCH`/`DELETE` de espacio y los `DELETE` de movimiento,
   categoría, cuenta y serie. El cliente no los usa hoy porque trabaja por lotes.
+
+## Sincronización incremental (Migración 0027 y GET /v1/sync/changes)
+
+- **Migración 0027 (`0027_server_updated_at.sql`)**: Columna `server_updated_at` (con triggers `touch_server_updated_at` e índices) en `spaces`, `categories`, `money_accounts`, `recurring_transaction_series` y `transactions`.
+- **Ruta `GET /v1/sync/changes?since=<ISO>`**: Lee los cambios en colecciones secundarias ocurridos tras el timestamp (con solapamiento de seguridad de 60s). Devuelve `spaces` siempre completo para evaluar consistencia de catálogo/contexto y `serverTime` de base de datos para avanzar el cursor local.
+

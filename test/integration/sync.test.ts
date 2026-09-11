@@ -1,10 +1,10 @@
 import { afterAll, describe, expect, it } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { bootstrapAccount, findCurrentUser, updateProfile } from "../../src/services/account";
 import { createSpaceWithOwner } from "../../src/services/spaces";
 import { syncSpaceData } from "../../src/services/space-sync";
-import { buildSnapshot } from "../../src/services/sync-snapshot";
-import { categories, moneyAccountBalances, transactions } from "../../src/db/schema";
+import { buildChanges, buildSnapshot } from "../../src/services/sync-snapshot";
+import { categories, moneyAccountBalances, spaces, transactions } from "../../src/db/schema";
 import { cleanupTestUsers, createTestUser, testDb } from "./harness";
 
 const db = testDb();
@@ -264,5 +264,128 @@ describe("snapshot against PostgreSQL", () => {
 
     expect(snapshot.spaces).toHaveLength(0);
     expect(snapshot.transactions).toHaveLength(0);
+  });
+});
+
+describe("changes against PostgreSQL", () => {
+  it("returns rows updated after the cursor and excludes rows updated before the overlap window", async () => {
+    const { userId, spaceId } = await sharedSpace("changes-cursor");
+    await syncSpaceData(db, spaceId, userId, {
+      installationId: "install-1",
+      categories: [categoryRow({ id: "cat-old-local", remoteId: "cat-old-local", name: "Antiguo" })],
+      moneyAccounts: [],
+      recurringSeries: [],
+      transactions: [],
+    });
+    // Forzar server_updated_at a hace 10 minutos para simular que ocurrió antes del cursor
+    await db.execute(sql`UPDATE categories SET server_updated_at = now() - interval '10 minutes' WHERE name = 'Antiguo' AND space_id = ${spaceId}`);
+
+    // El cursor se toma hace 5 minutos
+    const cursor = new Date(Date.now() - 5 * 60 * 1000);
+
+    // Insertar nueva fila ahora
+    await syncSpaceData(db, spaceId, userId, {
+      installationId: "install-1",
+      categories: [categoryRow({ id: "cat-new-local", remoteId: "cat-new-local", name: "Nuevo" })],
+      moneyAccounts: [],
+      recurringSeries: [],
+      transactions: [],
+    });
+
+    const changes = await buildChanges(db, userId, cursor);
+    const categoryNames = changes.categories.map((c) => c.name);
+    expect(categoryNames).toContain("Nuevo");
+    expect(categoryNames).not.toContain("Antiguo");
+  });
+
+  it("returns items pushed with an old client updatedAt when inserted after the cursor (skew)", async () => {
+    const { userId, spaceId } = await sharedSpace("changes-skew");
+    const cursor = new Date(Date.now() - 5000);
+
+    const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+    await syncSpaceData(db, spaceId, userId, {
+      installationId: "install-offline",
+      categories: [categoryRow({ id: "cat-off-local", remoteId: "cat-off-local", name: "Offline", updatedAt: threeDaysAgo })],
+      moneyAccounts: [],
+      recurringSeries: [],
+      transactions: [],
+    });
+
+    const changes = await buildChanges(db, userId, cursor);
+    expect(changes.categories.some((c) => c.name === "Offline")).toBe(true);
+  });
+
+  it("includes archived rows in the changes feed", async () => {
+    const { userId, spaceId } = await sharedSpace("changes-archived");
+    await syncSpaceData(db, spaceId, userId, {
+      installationId: "install-1",
+      categories: [categoryRow({ id: "cat-arch-local", remoteId: "cat-arch-local", name: "Por archivar" })],
+      moneyAccounts: [],
+      recurringSeries: [],
+      transactions: [],
+    });
+    const cursor = new Date(Date.now() - 2000);
+
+    await syncSpaceData(db, spaceId, userId, {
+      installationId: "install-1",
+      categories: [categoryRow({ id: "cat-arch-local", remoteId: "cat-arch-local", name: "Por archivar", isArchived: true, updatedAt: new Date().toISOString() })],
+      moneyAccounts: [],
+      recurringSeries: [],
+      transactions: [],
+    });
+
+    const changes = await buildChanges(db, userId, cursor);
+    const found = changes.categories.find((c) => c.name === "Por archivar");
+    expect(found).toBeDefined();
+    expect(found?.isArchived).toBe(true);
+  });
+
+  it("re-uploading identical rows touches server_updated_at and remains idempotent", async () => {
+    const { userId, spaceId } = await sharedSpace("changes-resync");
+    const batch = {
+      installationId: "install-1",
+      categories: [categoryRow({ id: "cat-idem-local", remoteId: "cat-idem-local", name: "Idempotente" })],
+      moneyAccounts: [],
+      recurringSeries: [],
+      transactions: [],
+    };
+    await syncSpaceData(db, spaceId, userId, batch);
+    const cursor = new Date(Date.now() - 1000);
+
+    await syncSpaceData(db, spaceId, userId, batch);
+
+    const changes = await buildChanges(db, userId, cursor);
+    expect(changes.categories.some((c) => c.name === "Idempotente")).toBe(true);
+
+    const stored = await db.select().from(categories).where(and(eq(categories.spaceId, spaceId), eq(categories.name, "Idempotente")));
+    expect(stored).toHaveLength(1);
+  });
+
+  it("updates server_updated_at on raw UPDATE spaces SET activated_at", async () => {
+    const { spaceId } = await sharedSpace("changes-raw-update");
+    const [before] = await db.select({ serverUpdatedAt: spaces.serverUpdatedAt }).from(spaces).where(eq(spaces.id, spaceId));
+    expect(before?.serverUpdatedAt).toBeDefined();
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    await db.execute(sql`UPDATE spaces SET activated_at = now() WHERE id = ${spaceId}`);
+
+    const [after] = await db.select({ serverUpdatedAt: spaces.serverUpdatedAt }).from(spaces).where(eq(spaces.id, spaceId));
+    expect(after!.serverUpdatedAt.getTime()).toBeGreaterThan(before!.serverUpdatedAt.getTime());
+  });
+
+  it("returns rows within the safety overlap window even when since is slightly in the future of the row", async () => {
+    const { userId, spaceId } = await sharedSpace("changes-overlap");
+    await syncSpaceData(db, spaceId, userId, {
+      installationId: "install-1",
+      categories: [categoryRow({ id: "cat-overlap-local", remoteId: "cat-overlap-local", name: "Solape" })],
+      moneyAccounts: [],
+      recurringSeries: [],
+      transactions: [],
+    });
+
+    const futureSince = new Date(Date.now() + 30_000);
+    const changes = await buildChanges(db, userId, futureSince);
+    expect(changes.categories.some((c) => c.name === "Solape")).toBe(true);
   });
 });

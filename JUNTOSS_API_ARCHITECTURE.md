@@ -589,6 +589,11 @@ local_sync_batches
 
 Antes de crear nuevas tablas remotas para mapping local/remoto debe revisarse si realmente son necesarias.
 
+### Sincronización Incremental (`/v1/sync/changes`) y Migración 0027
+
+- **`server_updated_at`**: Columna `timestamptz NOT NULL DEFAULT now()` en `spaces`, `categories`, `money_accounts`, `recurring_transaction_series` y `transactions`. Gestionada mediante triggers `touch_server_updated_at` `BEFORE INSERT OR UPDATE`. Evita pérdida de eventos en subidas desfasadas en el tiempo (`updated_at` es controlado por el cliente).
+- **Endpoint `GET /v1/sync/changes?since=<ISO>`**: Lee los cambios con ventana de solapamiento de seguridad (60s) para mitigar transacciones concurrentes en Neon HTTP. Los espacios se devuelven siempre completos para detectar rotaciones de membresía, contexto financiero o país.
+
 ---
 
 ## Legal

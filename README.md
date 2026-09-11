@@ -87,7 +87,35 @@ directamente, porque omite ese paso:
 npm run deploy:production
 ```
 
+## Cambio de país y espacios compartidos
+
+`PATCH /v1/me/profile` con `countryCode` cambia el contexto personal y da de
+baja las membresías compartidas cuyo país no coincide. La respuesta existente
+`data.leftSharedSpaceIds` contiene los IDs abandonados para retirar su caché
+local. Lista de espacios, snapshot y acceso por ID exigen el mismo país para
+los compartidos; un país sin definir solo coincide con otro sin definir.
+El espacio personal se selecciona por `user_profiles.personal_space_id`, para
+restaurar únicamente el contexto activo aunque sus metadatos históricos estén
+desalineados. La migración `0026` alinea su país y moneda con `financial_contexts`
+sin convertir ni modificar movimientos.
+
+Volver al país anterior recupera el contexto personal, pero no readmite al
+usuario en espacios compartidos: requiere una nueva invitación. Si sale el
+último propietario, se promueve un miembro compatible (administrador primero);
+si no queda ninguno, se archiva el espacio. El historial financiero se conserva.
+
+La migración `0025_leave_shared_spaces_on_country_change` aplica la baja dentro
+de la misma transacción del cambio de perfil, impide reactivar membresías de
+otro país y repara las incompatibilidades históricas. Debe aplicarse mediante
+el flujo de despliegue oficial antes de publicar el Worker.
+
 ## Sincronización de tasas Venezuela
+
+`POST /v1/exchange/preview` devuelve USD cuando la entrada es VES, y VES cuando
+la entrada es USD, tanto para `BCV` como para `EURO`. Cada referencia se aplica
+directamente al importe de entrada: se divide para VES → USD y se multiplica
+para USD → VES. En este preview, `EURO` identifica la referencia elegida para
+valorar USD/VES. `/v1/exchange/rates` conserva `EUR/VES` como origen de esa tasa.
 
 `POST /v1/spaces/:spaceId/sync` admite `customRateId?: string | null` solamente
 dentro de cada objeto de `transactions`. El cliente nunca debe incluir una
@@ -143,3 +171,14 @@ serializan siempre como strings de unidades menores; `convertedCurrency` indica
 la moneda exacta de cada `convertedAmountMinor`. Movimientos legacy sin
 referencias devuelven
 `exchangeSnapshot: null`.
+
+
+## Sincronización incremental (`GET /v1/sync/changes`)
+
+`GET /v1/sync/changes?since=<ISO>` devuelve los cambios ocurridos en el servidor desde el timestamp indicado en `since`.
+
+- **Cursor del servidor**: `server_updated_at` es un reloj asignado por la base de datos (mantenido por triggers en Postgres) y nunca lo envía el cliente. Por el contrario, `updated_at` es el reloj local del cliente (usado para resolución Last-Write-Wins en `/v1/spaces/:id/sync`).
+- **Regla de solape**: El lector aplica `server_updated_at > since - 60s` para evitar que transacciones concurrentes omitan filas. Las inserciones/actualizaciones en el cliente son idempotentes.
+- **Espacios completos**: `spaces` se devuelve siempre completo para que el cliente valide si hubo cambios de membresía, país o contexto financiero.
+- **Colecciones delta**: Las 4 colecciones (`categories`, `moneyAccounts`, `recurringSeries`, `transactions`) solo incluyen filas con `server_updated_at` posterior al umbral con solape. Las tablas hijas (`category_budgets`, `money_account_balances`, `transaction_reference_rates`) solo se leen para los padres que cambiaron.
+- **Cursor de retorno**: La respuesta incluye `serverTime` (reloj de la base) para ser utilizado en el siguiente ciclo.

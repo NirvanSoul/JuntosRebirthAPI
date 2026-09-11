@@ -359,6 +359,11 @@ export const spaces = pgTable(
       .defaultNow()
       .$onUpdate(() => /* @__PURE__ */ new Date())
       .notNull(),
+    // Reloj del servidor, mantenido por trigger (migración 0027). `updated_at`
+    // es el reloj del cliente (LWW) y no sirve como cursor de cambios.
+    serverUpdatedAt: timestamp("server_updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
   },
   (table) => [
     index("spaces_createdBy_idx").on(table.createdBy),
@@ -452,9 +457,15 @@ export const categories = pgTable(
       .defaultNow()
       .$onUpdate(() => /* @__PURE__ */ new Date())
       .notNull(),
+    // Reloj del servidor, mantenido por trigger (migración 0027). `updated_at`
+    // es el reloj del cliente (LWW) y no sirve como cursor de cambios.
+    serverUpdatedAt: timestamp("server_updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
   },
   (table) => [
     index("categories_spaceId_idx").on(table.spaceId),
+    index("categories_space_server_updated_idx").on(table.spaceId, table.serverUpdatedAt),
     // Creado por la migración 0007; faltaba aquí y hacía divergir el snapshot.
     uniqueIndex("categories_space_template_key_idx")
       .on(table.spaceId, table.templateKey)
@@ -577,8 +588,14 @@ export const moneyAccounts = pgTable(
       .defaultNow()
       .$onUpdate(() => /* @__PURE__ */ new Date())
       .notNull(),
+    // Reloj del servidor, mantenido por trigger (migración 0027). `updated_at`
+    // es el reloj del cliente (LWW) y no sirve como cursor de cambios.
+    serverUpdatedAt: timestamp("server_updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
   },
   (table) => [
+    index("money_accounts_space_server_updated_idx").on(table.spaceId, table.serverUpdatedAt),
     index("money_accounts_spaceId_idx").on(table.spaceId),
     uniqueIndex("money_accounts_source_local_idx")
       .on(table.spaceId, table.sourceInstallationId, table.sourceLocalId)
@@ -653,8 +670,14 @@ export const recurringTransactionSeries = pgTable(
       .defaultNow()
       .$onUpdate(() => /* @__PURE__ */ new Date())
       .notNull(),
+    // Reloj del servidor, mantenido por trigger (migración 0027). `updated_at`
+    // es el reloj del cliente (LWW) y no sirve como cursor de cambios.
+    serverUpdatedAt: timestamp("server_updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
   },
   (table) => [
+    index("recurring_transaction_series_space_server_updated_idx").on(table.spaceId, table.serverUpdatedAt),
     check("recurring_transaction_series_amount_minor_positive", sql`${table.amountMinor} > 0`),
     check(
       "recurring_transaction_series_generated_occurrences_nonnegative",
@@ -720,10 +743,16 @@ export const transactions = pgTable(
       .defaultNow()
       .$onUpdate(() => /* @__PURE__ */ new Date())
       .notNull(),
+    // Reloj del servidor, mantenido por trigger (migración 0027). `updated_at`
+    // es el reloj del cliente (LWW) y no sirve como cursor de cambios.
+    serverUpdatedAt: timestamp("server_updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
   },
   (table) => [
     check("transactions_amount_minor_positive", sql`${table.amountMinor} > 0`),
     index("transactions_space_occurred_on_idx").on(table.spaceId, table.occurredOn),
+    index("transactions_space_server_updated_idx").on(table.spaceId, table.serverUpdatedAt),
     index("transactions_category_occurred_on_idx").on(
       table.categoryId,
       table.occurredOn,

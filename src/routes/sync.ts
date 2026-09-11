@@ -8,7 +8,7 @@ import {
   requireActiveSpaceMember,
   type SpaceAccessVariables,
 } from "../middleware/space-access";
-import { buildSnapshot } from "../services/sync-snapshot";
+import { buildChanges, buildSnapshot } from "../services/sync-snapshot";
 import { syncSpaceData } from "../services/space-sync";
 import { findUserCountryCode } from "../services/account";
 import type { Bindings } from "../types/env";
@@ -45,6 +45,42 @@ export function createSnapshotRoute(
       return c.json({ data: snapshot });
     } catch (error) {
       logDatabaseFailure("sync.snapshot", error);
+      return databaseErrorResponse(c, error);
+    }
+  });
+
+  return route;
+}
+
+
+type ChangesDeps = { createDb: typeof createDb; buildChanges: typeof buildChanges };
+
+/** `GET /v1/sync/changes` — cambios incrementales desde un cursor `since`. */
+export function createChangesRoute(
+  deps: ChangesDeps = { createDb, buildChanges },
+) {
+  const route = new Hono<SnapshotEnv>();
+
+  route.get("/changes", async (c) => {
+    const sinceParam = c.req.query("since");
+    if (!sinceParam) {
+      return errorResponse(c, "INVALID_REQUEST");
+    }
+
+    const since = new Date(sinceParam);
+    if (isNaN(since.getTime())) {
+      return errorResponse(c, "INVALID_REQUEST");
+    }
+
+    try {
+      const changes = await deps.buildChanges(
+        deps.createDb(c.env.DATABASE_URL),
+        c.get("currentUserId"),
+        since,
+      );
+      return c.json({ data: changes });
+    } catch (error) {
+      logDatabaseFailure("sync.changes", error);
       return databaseErrorResponse(c, error);
     }
   });
