@@ -1,4 +1,5 @@
-import { and, eq, isNull, or } from "drizzle-orm";
+import { activeSpaceScope } from "./active-space-scope";
+import { and, eq, isNull } from "drizzle-orm";
 import { createDb, type Database } from "../db/client";
 import { spaceMembers, spaces, userProfiles } from "../db/schema";
 
@@ -29,14 +30,14 @@ export function buildActiveSpaceMembershipQuery(
     })
     .from(spaceMembers)
     .innerJoin(spaces, eq(spaceMembers.spaceId, spaces.id))
-    .innerJoin(userProfiles, eq(userProfiles.userId, spaceMembers.userId))
+    .leftJoin(userProfiles, eq(userProfiles.userId, spaceMembers.userId))
     .where(
       and(
         eq(spaceMembers.spaceId, spaceId),
         eq(spaceMembers.userId, userId),
         eq(spaceMembers.status, "active"),
         isNull(spaces.archivedAt),
-        or(isNull(userProfiles.countryCode), eq(spaces.countryCode, userProfiles.countryCode)),
+        activeSpaceScope(),
       ),
     )
     .limit(1);

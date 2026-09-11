@@ -126,12 +126,23 @@ describe("getCurrentRates", () => {
 });
 
 describe("previewConversion", () => {
-  it("converts a VES amount to its USD and EUR equivalents", async () => {
-    const service = fakeVenezuelaRateService(new Error("unused"));
+  it("values VES in USD independently using BCV and EURO references", async () => {
     const result = await previewConversion(mockDb({ snapshotRows: TODAY_ROWS }), { amount: "10000", currency: "VES" });
 
     expect(result.conversions.BCV).toMatchObject({ amount: "200.00", currency: "USD", rate: "50.0000000000" });
-    expect(result.conversions.EURO).toMatchObject({ amount: "166.67", currency: "EUR", rate: "60.0000000000" });
+    expect(result.conversions.EURO).toMatchObject({ amount: "166.67", currency: "USD", rate: "60.0000000000" });
+  });
+
+  it("values USD in VES directly with each reference instead of crossing through BCV", async () => {
+    const result = await previewConversion(mockDb({ snapshotRows: TODAY_ROWS }), { amount: "10.00", currency: "USD" });
+    expect(result.conversions.BCV).toEqual({ amount: "500.00", currency: "VES", rate: "50.0000000000" });
+    expect(result.conversions.EURO).toEqual({ amount: "600.00", currency: "VES", rate: "60.0000000000" });
+  });
+
+  it("rounds each reference independently using decimal arithmetic", async () => {
+    const result = await previewConversion(mockDb({ snapshotRows: TODAY_ROWS }), { amount: "1.00", currency: "VES" });
+    expect(result.conversions.BCV).toMatchObject({ amount: "0.02", currency: "USD" });
+    expect(result.conversions.EURO).toMatchObject({ amount: "0.02", currency: "USD" });
   });
 });
 

@@ -76,7 +76,7 @@ describe("invitations against PostgreSQL", () => {
     expect((await listMembers(db, space.id)).map((member) => member.userId)).not.toContain(later!.id);
   });
 
-  it("keeps a profile unchanged when a shared-space country change is blocked", async () => {
+  it("leaves the shared space when the profile changes country", async () => {
     const owner = await person("country-change-owner");
     const partner = await person("country-change-partner");
     await updateProfile(db, owner.userId, { countryCode: "ES" });
@@ -85,9 +85,10 @@ describe("invitations against PostgreSQL", () => {
     const invite = await createInvitation(db, { spaceId: space.id, invitedBy: owner.userId, email: partner.email, role: "member" });
     await acceptInvitation(db, partner.userId, invite.token);
 
-    await expect(updateProfile(db, partner.userId, { countryCode: "VE" }))
-      .rejects.toThrow("COUNTRY_CHANGE_BLOCKED_BY_SHARED_SPACE");
-    expect((await getAccountState(db, partner.userId)).profile?.countryCode).toBe("ES");
+    const updated = await updateProfile(db, partner.userId, { countryCode: "VE" });
+    expect(updated?.leftSharedSpaceIds).toEqual([space.id]);
+    expect((await getAccountState(db, partner.userId)).profile?.countryCode).toBe("VE");
+    expect((await listMembers(db, space.id)).map((member) => member.userId)).not.toContain(partner.userId);
   });
 
   it("activates the couple space only when the invitation is accepted", async () => {

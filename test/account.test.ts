@@ -34,7 +34,7 @@ function createTestApp(userId = "user-1") {
   const testApp = new Hono<{ Bindings: Bindings; Variables: AuthVariables }>();
   testApp.use("/v1/*", createRequireAuth(async () => (userId ? { userId, emailVerified: true } : null)));
   testApp.route("/v1", createAccountRoute(deps as never));
-  return { testApp, deps: deps as unknown as { bootstrapAccount: ReturnType<typeof vi.fn>; updateProfile: ReturnType<typeof vi.fn> } };
+  return { testApp, deps: deps as unknown as { bootstrapAccount: ReturnType<typeof vi.fn>; updateProfile: ReturnType<typeof vi.fn>; getAccountState: ReturnType<typeof vi.fn>; findCurrentUser: ReturnType<typeof vi.fn> } };
 }
 
 describe("Account routes", () => {
@@ -129,9 +129,9 @@ describe("Account routes", () => {
     expect(deps.updateProfile).toHaveBeenCalledWith(expect.anything(), "user-1", { displayName: "Ada Lovelace", defaultCurrency: "USD" });
   });
 
-  it("rejects an unsupported countryCode", async () => {
+  it.each(["XX-INVALID", "ZZ", "EU", "VEN", "", null, 42])("rejects unsupported countryCode %j", async (countryCode) => {
     const { testApp, deps } = createTestApp();
-    const response = await testApp.request("/v1/me/profile", { method: "PATCH", body: JSON.stringify({ countryCode: "XX-INVALID" }) }, bindings);
+    const response = await testApp.request("/v1/me/profile", { method: "PATCH", body: JSON.stringify({ countryCode }) }, bindings);
     expect(response.status).toBe(400);
     expect(deps.updateProfile).not.toHaveBeenCalled();
   });
@@ -141,5 +141,49 @@ describe("Account routes", () => {
     const response = await testApp.request("/v1/me/profile", { method: "PATCH", body: JSON.stringify({ countryCode: "ve" }) }, bindings);
     expect(response.status).toBe(200);
     expect(deps.updateProfile).toHaveBeenCalledWith(expect.anything(), "user-1", { countryCode: "VE" });
+  });
+
+  it("returns departed shared spaces alongside the profile for cache removal", async () => {
+    const { testApp, deps } = createTestApp();
+    deps.updateProfile.mockResolvedValueOnce({ ...profile, countryCode: "VE", leftSharedSpaceIds: ["shared-1"] });
+    const response = await testApp.request("/v1/me/profile", { method: "PATCH", body: JSON.stringify({ countryCode: "VE" }) }, bindings);
+    expect(response.status).toBe(200);
+    const body = await response.json() as { data: { profile: Record<string, unknown>; leftSharedSpaceIds: string[] } };
+    expect(body.data.leftSharedSpaceIds).toEqual(["shared-1"]);
+    expect(body.data.profile.countryCode).toBe("VE");
+    expect(body.data.profile).not.toHaveProperty("leftSharedSpaceIds");
+  });
+
+  it("GET /v1/me returns the stored Venezuelan profile despite another user ID in the query", async () => {
+    const { testApp, deps } = createTestApp();
+    deps.getAccountState.mockResolvedValueOnce({ profile: { ...profile, countryCode: "VE" }, personalSpaceId: "space-1" });
+    const response = await testApp.request("/v1/me?userId=other-user", {}, bindings);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ data: { profile: { countryCode: "VE" }, bootstrapRequired: false } });
+    expect(deps.findCurrentUser).toHaveBeenCalledWith(expect.anything(), "user-1");
+    expect(deps.getAccountState).toHaveBeenCalledWith(expect.anything(), "user-1");
+  });
+
+  it("cannot redirect a profile update to another user", async () => {
+    const { testApp, deps } = createTestApp();
+    const invalid = await testApp.request("/v1/me/profile", {
+      method: "PATCH", body: JSON.stringify({ userId: "other-user", countryCode: "VE" }),
+    }, bindings);
+    expect(invalid.status).toBe(400);
+    expect(deps.updateProfile).not.toHaveBeenCalled();
+    const valid = await testApp.request("/v1/me/profile?userId=other-user", {
+      method: "PATCH", body: JSON.stringify({ countryCode: "ve" }),
+    }, bindings);
+    expect(valid.status).toBe(200);
+    expect(deps.updateProfile).toHaveBeenCalledWith(expect.anything(), "user-1", { countryCode: "VE" });
+  });
+
+  it("requires a session to update a country", async () => {
+    const { testApp, deps } = createTestApp("");
+    const response = await testApp.request("/v1/me/profile", {
+      method: "PATCH", body: JSON.stringify({ countryCode: "VE" }),
+    }, bindings);
+    expect(response.status).toBe(401);
+    expect(deps.updateProfile).not.toHaveBeenCalled();
   });
 });

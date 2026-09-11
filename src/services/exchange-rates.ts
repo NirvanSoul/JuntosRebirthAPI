@@ -238,8 +238,8 @@ export type PreviewInput = { amount: string; currency: "VES" | "USD" };
 export type PreviewResult = {
   input: { amount: string; currency: string };
   conversions: {
-    BCV: { amount: string; currency: string; rate: string };
-    EURO: { amount: string; currency: string; rate: string };
+    BCV: { amount: string; currency: "USD" | "VES"; rate: string };
+    EURO: { amount: string; currency: "USD" | "VES"; rate: string };
   };
   ratesUpdatedAt: string;
 };
@@ -248,20 +248,19 @@ export async function previewConversion(db: Database, input: PreviewInput): Prom
   const current = await getCurrentRates(db, "VE");
   const amountMinor = toMinorUnits(input.amount);
 
-  const vesMinor =
-    input.currency === "VES" ? amountMinor : convertMinorAmount(amountMinor, current.rates.BCV.rate, "multiply");
-  const usdMinor =
-    input.currency === "USD" ? amountMinor : convertMinorAmount(vesMinor, current.rates.BCV.rate, "divide");
-  const eurMinor = convertMinorAmount(vesMinor, current.rates.EURO.rate, "divide");
-
-  const bcvDisplayCurrency = input.currency === "VES" ? "USD" : "VES";
-  const bcvAmountMinor = input.currency === "VES" ? usdMinor : vesMinor;
+  const displayCurrency = input.currency === "VES" ? "USD" : "VES";
+  const direction = input.currency === "VES" ? "divide" : "multiply";
+  // En el preview EURO es la referencia de valoración USD/VES elegida por
+  // el producto. Se aplica directamente al importe original, sin cruzar
+  // primero por BCV ni convertir a euros europeos.
+  const bcvAmountMinor = convertMinorAmount(amountMinor, current.rates.BCV.rate, direction);
+  const euroAmountMinor = convertMinorAmount(amountMinor, current.rates.EURO.rate, direction);
 
   return {
     input: { amount: input.amount, currency: input.currency },
     conversions: {
-      BCV: { amount: fromMinorUnits(bcvAmountMinor), currency: bcvDisplayCurrency, rate: current.rates.BCV.rate },
-      EURO: { amount: fromMinorUnits(eurMinor), currency: "EUR", rate: current.rates.EURO.rate },
+      BCV: { amount: fromMinorUnits(bcvAmountMinor), currency: displayCurrency, rate: current.rates.BCV.rate },
+      EURO: { amount: fromMinorUnits(euroAmountMinor), currency: displayCurrency, rate: current.rates.EURO.rate },
     },
     ratesUpdatedAt: current.ratesUpdatedAt,
   };

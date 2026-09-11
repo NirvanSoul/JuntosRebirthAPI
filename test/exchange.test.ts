@@ -58,7 +58,7 @@ describe("Exchange routes", () => {
       input: { amount: "10000", currency: "VES" },
       conversions: {
         BCV: { amount: "200.00", currency: "USD", rate: "50.0000000000" },
-        EURO: { amount: "166.67", currency: "EUR", rate: "60.0000000000" },
+        EURO: { amount: "166.67", currency: "USD", rate: "60.0000000000" },
       },
       ratesUpdatedAt: "2026-09-01T00:00:00.000Z",
     };

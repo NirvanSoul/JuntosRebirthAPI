@@ -487,7 +487,7 @@ Respuesta:
     },
     "EURO": {
       "amount": "163.30",
-      "currency": "EUR",
+      "currency": "USD",
       "rate": "61.2384"
     }
   },
@@ -497,6 +497,7 @@ Respuesta:
 
 Este endpoint:
 
+- usa BCV y EURO como referencias alternativas de valoración USD/VES; ambas devuelven USD para una entrada VES y VES para una entrada USD;
 - sirve solo como preview;
 - no congela tasas;
 - puede usar caché;

@@ -96,19 +96,21 @@ export function createAccountRoute(deps: Dependencies = defaults) {
     const input = await parseProfile(c.req.raw);
     if (!input) return errorResponse(c, "INVALID_REQUEST");
     try {
-      const profile = await deps.updateProfile(
-        deps.createDb(c.env.DATABASE_URL),
+      const db = deps.createDb(c.env.DATABASE_URL);
+      const updated = await deps.updateProfile(
+        db,
         c.get("currentUserId"),
         input,
       );
-      if (!profile) return errorResponse(c, "PROFILE_NOT_FOUND");
+      if (!updated) return errorResponse(c, "PROFILE_NOT_FOUND");
+      const { leftSharedSpaceIds = [], ...profile } = updated;
       return c.json({
         data: {
           profile,
           activeFinancialContext: input.countryCode !== undefined
-            ? (await deps.getAccountState(deps.createDb(c.env.DATABASE_URL), c.get("currentUserId"))).activeFinancialContext
+            ? (await deps.getAccountState(db, c.get("currentUserId"))).activeFinancialContext
             : null,
-          leftSharedSpaceIds: [],
+          leftSharedSpaceIds,
         },
       });
     } catch (error) {

@@ -1,7 +1,8 @@
 import { and, eq, sql } from "drizzle-orm";
 import { defaultCategories } from "../constants/default-categories";
 import type { Database } from "../db/client";
-import { financialContexts, moneyAccountBalances, moneyAccounts, spaceMembers, spaces, user, userProfiles } from "../db/schema";
+import { financialContexts, spaceMembers, spaces, user, userProfiles } from "../db/schema";
+import { normalizeCountryCode } from "../lib/country";
 import { claimEmailInvitations } from "./invitations";
 
 export type CurrentUser = {
@@ -61,6 +62,7 @@ export async function bootstrapAccount(
   await claimEmailInvitations(db, currentUser.id, currentUser.email);
 
   const spaceId = crypto.randomUUID();
+  const contextId = crypto.randomUUID();
   const categoryValues = sql.join(
     defaultCategories.map(
       (category) =>
@@ -72,7 +74,7 @@ export async function bootstrapAccount(
   const result = await db.execute(sql`
     WITH claimed_profile AS (
       UPDATE user_profiles
-      SET personal_space_id = ${spaceId}, updated_at = now()
+      SET personal_space_id = ${spaceId}, active_financial_context_id = ${contextId}, updated_at = now()
       WHERE user_id = ${currentUser.id} AND personal_space_id IS NULL
       RETURNING personal_space_id
     ), new_space AS (
@@ -80,7 +82,7 @@ export async function bootstrapAccount(
       SELECT ${spaceId}, 'Personal', 'personal', default_currency, country_code, ${timezone}, ${currentUser.id}, now(), now(), now()
       FROM user_profiles
       WHERE user_id = ${currentUser.id} AND EXISTS (SELECT 1 FROM claimed_profile)
-      RETURNING id
+      RETURNING id, country_code, currency
     ), owner_membership AS (
       INSERT INTO space_members (space_id, user_id, role, status, joined_at, created_at, updated_at)
       SELECT id, ${currentUser.id}, 'owner', 'active', now(), now(), now()
@@ -89,8 +91,8 @@ export async function bootstrapAccount(
         SET role = 'owner', status = 'active', left_at = NULL, updated_at = now()
       RETURNING space_id
     ), new_context AS (
-      INSERT INTO financial_contexts (user_id, country_code, canonical_currency, personal_space_id, created_at, updated_at)
-      SELECT ${currentUser.id}, COALESCE(country_code, 'ZZ'), default_currency, id, now(), now()
+      INSERT INTO financial_contexts (id, user_id, country_code, canonical_currency, personal_space_id, created_at, updated_at)
+      SELECT ${contextId}, ${currentUser.id}, COALESCE(country_code, 'ZZ'), currency, id, now(), now()
       FROM new_space
       ON CONFLICT (user_id, country_code) DO NOTHING
       RETURNING id, personal_space_id
@@ -101,7 +103,10 @@ export async function bootstrapAccount(
         (SELECT id FROM financial_contexts WHERE user_id=${currentUser.id}
           AND personal_space_id=(SELECT personal_space_id FROM user_profiles WHERE user_id=${currentUser.id}) LIMIT 1)
       ), updated_at=now()
-      WHERE user_id=${currentUser.id} AND active_financial_context_id IS NULL
+      -- Los perfiles nuevos ya se actualizan en claimed_profile. PostgreSQL
+      -- no permite actualizar de forma fiable la misma fila en dos CTE.
+      WHERE user_id=${currentUser.id} AND personal_space_id IS NOT NULL
+        AND active_financial_context_id IS NULL
       RETURNING active_financial_context_id
     ), initial_categories AS (
       INSERT INTO categories (space_id, name, icon, color_token, created_by, is_default, template_key, created_at, updated_at)
@@ -175,13 +180,14 @@ export async function updateProfile(
   db: Database,
   userId: string,
   input: Partial<Pick<Profile, "displayName" | "locale" | "defaultCurrency" | "countryCode">>,
-): Promise<Profile | null> {
+): Promise<(Profile & { leftSharedSpaceIds?: string[] }) | null> {
   // El país activa un libro personal independiente. Los libros anteriores no
   // se modifican: al volver al país se recupera el mismo espacio personal.
   // La consulta y el UPDATE viven en una única sentencia: si la condición deja
   // de cumplirse entre ambas fases, no queda un perfil a medio cambiar.
   if (input.countryCode !== undefined) {
-    const countryCode = input.countryCode!;
+    const countryCode = normalizeCountryCode(input.countryCode);
+    if (!countryCode) throw new Error("INVALID_REQUEST");
     const canonicalCurrency = canonicalCurrencyForCountry(
       countryCode,
       input.defaultCurrency,
@@ -203,7 +209,8 @@ export async function updateProfile(
         SELECT ${spaceId}, 'Personal', 'personal', ${canonicalCurrency}, ${countryCode},
           COALESCE((SELECT timezone FROM spaces WHERE id=(SELECT personal_space_id FROM user_profiles WHERE user_id=${userId})), 'UTC'),
           ${userId}, now(), now(), now()
-        WHERE NOT EXISTS (SELECT 1 FROM existing_context)
+        WHERE EXISTS (SELECT 1 FROM user_profiles WHERE user_id=${userId})
+          AND NOT EXISTS (SELECT 1 FROM existing_context)
         RETURNING id
       ), new_membership AS (
         INSERT INTO space_members (space_id, user_id, role, status, joined_at, created_at, updated_at)
@@ -234,10 +241,19 @@ export async function updateProfile(
         WHERE user_id=${userId}
         RETURNING display_name, locale, default_currency, country_code, avatar_path
       )
-      SELECT display_name, locale, default_currency, country_code, avatar_path FROM changed
+      -- El snapshot de esta sentencia conserva las membresías anteriores.
+      -- El trigger user_profiles_country_memberships materializa la salida
+      -- de forma atómica con changed antes de devolver la respuesta.
+      SELECT changed.*, ARRAY(
+        SELECT m.space_id FROM space_members m
+        JOIN spaces s ON s.id=m.space_id
+        WHERE m.user_id=${userId} AND m.status='active' AND s.type<>'personal'
+          AND s.country_code IS DISTINCT FROM ${countryCode}
+        ORDER BY m.space_id
+      ) AS left_shared_space_ids FROM changed
     `);
     const row = result.rows[0];
-    return row ? { displayName: row.display_name as string, locale: row.locale as string, defaultCurrency: row.default_currency as string, countryCode: row.country_code as string | null, avatarPath: row.avatar_path as string | null } : null;
+    return row ? { displayName: row.display_name as string, locale: row.locale as string, defaultCurrency: row.default_currency as string, countryCode: row.country_code as string | null, avatarPath: row.avatar_path as string | null, leftSharedSpaceIds: row.left_shared_space_ids as string[] } : null;
   }
   const [profile] = await db
     .update(userProfiles)

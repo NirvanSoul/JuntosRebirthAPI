@@ -176,6 +176,20 @@
       "when": 1788339600000,
       "tag": "0024_repair_user_profile_country_code",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1788343200000,
+      "tag": "0025_leave_shared_spaces_on_country_change",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1788346800000,
+      "tag": "0026_align_personal_space_financial_context",
+      "breakpoints": true
     }
   ]
 }
