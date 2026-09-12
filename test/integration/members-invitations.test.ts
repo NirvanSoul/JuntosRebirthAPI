@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { bootstrapAccount, findCurrentUser, getAccountState, updateProfile } from "../../src/services/account";
-import { createSpaceWithOwner } from "../../src/services/spaces";
+import { cancelPendingCoupleSpace, createSpaceWithOwner, listActiveSpaces } from "../../src/services/spaces";
 import {
   acceptInvitation,
   createInvitation,
@@ -34,6 +34,24 @@ async function coupleSpace(ownerId: string) {
     currency: "EUR",
     timezone: "Europe/Madrid",
   });
+}
+
+async function spaceWithPartner(label: string) {
+  const owner = await person(`${label}-owner`);
+  const partner = await person(`${label}-partner`);
+  const space = await coupleSpace(owner.userId);
+  const created = await createInvitation(db, {
+    spaceId: space.id,
+    invitedBy: owner.userId,
+    email: partner.email,
+    role: "member",
+  });
+  await acceptInvitation(db, partner.userId, created.token);
+
+  const members = await listMembers(db, space.id);
+  const memberIdOf = (userId: string) =>
+    members.find((member) => member.userId === userId)!.id;
+  return { owner, partner, space, memberIdOf };
 }
 
 describe("invitations against PostgreSQL", () => {
@@ -272,24 +290,6 @@ describe("invitations against PostgreSQL", () => {
 });
 
 describe("member management CTEs against PostgreSQL", () => {
-  async function spaceWithPartner(label: string) {
-    const owner = await person(`${label}-owner`);
-    const partner = await person(`${label}-partner`);
-    const space = await coupleSpace(owner.userId);
-    const created = await createInvitation(db, {
-      spaceId: space.id,
-      invitedBy: owner.userId,
-      email: partner.email,
-      role: "member",
-    });
-    await acceptInvitation(db, partner.userId, created.token);
-
-    const members = await listMembers(db, space.id);
-    const memberIdOf = (userId: string) =>
-      members.find((member) => member.userId === userId)!.id;
-    return { owner, partner, space, memberIdOf };
-  }
-
   it("never lets the last owner demote, remove or leave", async () => {
     const { owner, space, memberIdOf } = await spaceWithPartner("last-owner");
 
@@ -358,5 +358,95 @@ describe("member management CTEs against PostgreSQL", () => {
     ).toBe(true);
     // Con dos propietarios activos, el original ya puede salir.
     expect(await leaveSpace(db, { spaceId: space.id, userId: owner.userId })).toBe(true);
+  });
+});
+
+describe("cancelling pending couple space against PostgreSQL", () => {
+  it("cancels pending couple space, deletes the space from database, and frees the creator to create a new couple space", async () => {
+    const owner = await person("cancel-owner");
+    const partner = await person("cancel-partner");
+    const space = await coupleSpace(owner.userId);
+    expect(space.activatedAt).toBeNull();
+
+    const created = await createInvitation(db, {
+      spaceId: space.id,
+      invitedBy: owner.userId,
+      email: partner.email,
+      role: "member",
+    });
+
+    const activeBefore = await listActiveSpaces(db, owner.userId);
+    expect(activeBefore.some((s) => s.id === space.id)).toBe(true);
+
+    const result = await cancelPendingCoupleSpace(db, {
+      spaceId: space.id,
+      userId: owner.userId,
+    });
+    expect(result).toEqual({ success: true });
+
+    // El espacio ya no existe en la base
+    const storedSpaces = await db.select().from(spaces).where(eq(spaces.id, space.id));
+    expect(storedSpaces).toHaveLength(0);
+
+    // Tampoco existe en el listado de espacios activos
+    const activeAfter = await listActiveSpaces(db, owner.userId);
+    expect(activeAfter.some((s) => s.id === space.id)).toBe(false);
+
+    // Sus membresías se eliminaron
+    const storedMembers = await db.select().from(spaceMembers).where(eq(spaceMembers.spaceId, space.id));
+    expect(storedMembers).toHaveLength(0);
+
+    // La invitación ya no se puede aceptar
+    const accepted = await acceptInvitation(db, partner.userId, created.token);
+    expect(accepted).toBeUndefined();
+
+    // El creador puede volver a crear otro espacio de pareja inmediatamente (liberó el índice único)
+    const newSpace = await coupleSpace(owner.userId);
+    expect(newSpace.id).toBeDefined();
+    expect(newSpace.id).not.toBe(space.id);
+  });
+
+  it("refuses cancellation if user is not the owner", async () => {
+    const owner = await person("cancel-stranger-owner");
+    const stranger = await person("cancel-stranger");
+    const space = await coupleSpace(owner.userId);
+
+    const result = await cancelPendingCoupleSpace(db, {
+      spaceId: space.id,
+      userId: stranger.userId,
+    });
+    expect(result).toEqual({ success: false, code: "FORBIDDEN" });
+
+    // El espacio sigue existiendo
+    const storedSpaces = await db.select().from(spaces).where(eq(spaces.id, space.id));
+    expect(storedSpaces).toHaveLength(1);
+  });
+
+  it("refuses cancellation if the space was already activated by partner acceptance", async () => {
+    const { owner, space } = await spaceWithPartner("cancel-active");
+    const [stored] = await db.select({ activatedAt: spaces.activatedAt }).from(spaces).where(eq(spaces.id, space.id));
+    expect(stored?.activatedAt).not.toBeNull();
+
+    const result = await cancelPendingCoupleSpace(db, {
+      spaceId: space.id,
+      userId: owner.userId,
+    });
+    expect(result).toEqual({ success: false, code: "INVALID_REQUEST" });
+
+    // El espacio sigue existiendo
+    const storedSpaces = await db.select().from(spaces).where(eq(spaces.id, space.id));
+    expect(storedSpaces).toHaveLength(1);
+  });
+
+  it("refuses cancellation on a personal space", async () => {
+    const owner = await person("cancel-personal");
+    const state = await getAccountState(db, owner.userId);
+    const personalSpaceId = state.personalSpaceId!;
+
+    const result = await cancelPendingCoupleSpace(db, {
+      spaceId: personalSpaceId,
+      userId: owner.userId,
+    });
+    expect(result).toEqual({ success: false, code: "INVALID_REQUEST" });
   });
 });

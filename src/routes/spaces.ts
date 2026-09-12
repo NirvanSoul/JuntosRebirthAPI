@@ -5,6 +5,7 @@ import { boundedString, parseBody } from "../lib/validation";
 import { normalizeCurrency } from "../lib/currency";
 import { normalizeTimeZone } from "../lib/timezone";
 import {
+  cancelPendingCoupleSpace,
   createSpaceWithOwner,
   createSpacesService,
   listActiveSpaces,
@@ -22,12 +23,14 @@ type SpacesDependencies = {
   createDb: typeof createSpacesService;
   listActiveSpaces: typeof listActiveSpaces;
   createSpaceWithOwner: typeof createSpaceWithOwner;
+  cancelPendingCoupleSpace: typeof cancelPendingCoupleSpace;
 };
 
 const defaultDependencies: SpacesDependencies = {
   createDb: createSpacesService,
   listActiveSpaces,
   createSpaceWithOwner,
+  cancelPendingCoupleSpace,
 };
 
 export function createSpacesRoute(
@@ -71,6 +74,35 @@ export function createSpacesRoute(
       if (isUniqueViolation(error, "spaces_one_active_couple_per_creator_idx")) {
         return errorResponse(c, "COUPLE_SPACE_LIMIT");
       }
+      return errorResponse(c, "INTERNAL_SERVER_ERROR");
+    }
+  });
+
+  route.post("/:spaceId/cancel-pending-couple-invitation", async (c) => {
+    const spaceId = c.req.param("spaceId");
+    if (!spaceId) {
+      return errorResponse(c, "SPACE_NOT_FOUND");
+    }
+
+    try {
+      const db = dependencies.createDb(c.env.DATABASE_URL);
+      const result = await dependencies.cancelPendingCoupleSpace(db, {
+        spaceId,
+        userId: c.get("currentUserId"),
+      });
+
+      if (!result.success) {
+        return errorResponse(c, result.code);
+      }
+
+      return c.json({
+        data: {
+          cancelled: true,
+          spaceDeleted: true,
+        },
+      });
+    } catch (error) {
+      console.error("Cancel pending couple invitation failed:", error);
       return errorResponse(c, "INTERNAL_SERVER_ERROR");
     }
   });

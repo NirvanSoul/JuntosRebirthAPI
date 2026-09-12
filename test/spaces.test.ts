@@ -7,6 +7,7 @@ import { createSpacesRoute } from "../src/routes/spaces";
 import {
   buildListActiveSpacesQuery,
   createSpaceWithOwner,
+  type CancelPendingCoupleSpaceResult,
   type SpaceSummary,
 } from "../src/services/spaces";
 import type { Database } from "../src/db/client";
@@ -35,6 +36,7 @@ function createTestApp(options: {
   userId?: string;
   listedSpaces?: SpaceSummary[];
   onCreate?: (userId: string, input: unknown) => SpaceSummary;
+  onCancel?: (userId: string, spaceId: string) => CancelPendingCoupleSpaceResult;
 }) {
   const testApp = new Hono<{ Bindings: Bindings; Variables: AuthVariables }>();
   testApp.use(
@@ -59,6 +61,9 @@ function createTestApp(options: {
             role: "owner",
           },
         ),
+      ),
+      cancelPendingCoupleSpace: vi.fn().mockImplementation((_db, { spaceId, userId }) =>
+        Promise.resolve(options.onCancel?.(userId, spaceId) ?? { success: true }),
       ),
     }),
   );
@@ -233,5 +238,82 @@ describe("Spaces service", () => {
 
     // El cliente deriva "esperando pareja" de `activatedAt === null`.
     expect(created.activatedAt).toBeNull();
+  });
+
+  describe("POST /v1/spaces/:spaceId/cancel-pending-couple-invitation", () => {
+    it("returns 401 without a session", async () => {
+      const response = await app.request(
+        "/v1/spaces/550e8400-e29b-41d4-a716-446655440000/cancel-pending-couple-invitation",
+        { method: "POST" },
+      );
+      expect(response.status).toBe(401);
+      await expect(response.json()).resolves.toEqual({
+        error: { code: "UNAUTHORIZED", message: "Unauthorized." },
+      });
+    });
+
+    it("returns 200 with cancelled and spaceDeleted when cancellation succeeds", async () => {
+      const testApp = createTestApp({ userId: "user-owner" });
+      const response = await testApp.request(
+        "/v1/spaces/550e8400-e29b-41d4-a716-446655440000/cancel-pending-couple-invitation",
+        { method: "POST" },
+        bindings,
+      );
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({
+        data: {
+          cancelled: true,
+          spaceDeleted: true,
+        },
+      });
+    });
+
+    it("returns 404 when space is not found", async () => {
+      const testApp = createTestApp({
+        userId: "user-owner",
+        onCancel: () => ({ success: false, code: "SPACE_NOT_FOUND" }),
+      });
+      const response = await testApp.request(
+        "/v1/spaces/550e8400-e29b-41d4-a716-446655440000/cancel-pending-couple-invitation",
+        { method: "POST" },
+        bindings,
+      );
+      expect(response.status).toBe(404);
+      await expect(response.json()).resolves.toEqual({
+        error: { code: "SPACE_NOT_FOUND", message: "Space not found." },
+      });
+    });
+
+    it("returns 403 when user is not the owner", async () => {
+      const testApp = createTestApp({
+        userId: "user-member",
+        onCancel: () => ({ success: false, code: "FORBIDDEN" }),
+      });
+      const response = await testApp.request(
+        "/v1/spaces/550e8400-e29b-41d4-a716-446655440000/cancel-pending-couple-invitation",
+        { method: "POST" },
+        bindings,
+      );
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toEqual({
+        error: { code: "FORBIDDEN", message: "Forbidden." },
+      });
+    });
+
+    it("returns 400 when space is already active or invalid", async () => {
+      const testApp = createTestApp({
+        userId: "user-owner",
+        onCancel: () => ({ success: false, code: "INVALID_REQUEST" }),
+      });
+      const response = await testApp.request(
+        "/v1/spaces/550e8400-e29b-41d4-a716-446655440000/cancel-pending-couple-invitation",
+        { method: "POST" },
+        bindings,
+      );
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({
+        error: { code: "INVALID_REQUEST", message: "Invalid request." },
+      });
+    });
   });
 });
