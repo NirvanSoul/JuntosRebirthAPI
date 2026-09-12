@@ -240,9 +240,27 @@ describe("invitations against PostgreSQL", () => {
     }
   });
 
-  it("rejects a revoked invitation and reports it as revoked", async () => {
-    const owner = await person("inv-revoke-owner");
-    const partner = await person("inv-revoke-partner");
+  it("rejects a revoked invitation and reports it as revoked in an active space", async () => {
+    const { owner, space } = await spaceWithPartner("inv-revoke");
+    const thirdParty = await person("inv-revoke-third");
+
+    const created = await createInvitation(db, {
+      spaceId: space.id,
+      invitedBy: owner.userId,
+      email: thirdParty.email,
+      role: "member",
+    });
+    expect(await revokeInvitation(db, space.id, created.invitation.id)).toBe(true);
+
+    await expect(acceptInvitation(db, thirdParty.userId, created.token)).resolves.toBeUndefined();
+    expect((await previewInvitation(db, created.token)).status).toBe("revoked");
+    // Revocar dos veces no vuelve a cambiar nada.
+    expect(await revokeInvitation(db, space.id, created.invitation.id)).toBe(false);
+  });
+
+  it("revoking an invitation on an unactivated couple space deletes the space", async () => {
+    const owner = await person("inv-revoke-couple-owner");
+    const partner = await person("inv-revoke-couple-partner");
     const space = await coupleSpace(owner.userId);
 
     const created = await createInvitation(db, {
@@ -251,12 +269,27 @@ describe("invitations against PostgreSQL", () => {
       email: partner.email,
       role: "member",
     });
+
     expect(await revokeInvitation(db, space.id, created.invitation.id)).toBe(true);
 
-    await expect(acceptInvitation(db, partner.userId, created.token)).resolves.toBeUndefined();
-    expect((await previewInvitation(db, created.token)).status).toBe("revoked");
-    // Revocar dos veces no vuelve a cambiar nada.
-    expect(await revokeInvitation(db, space.id, created.invitation.id)).toBe(false);
+    // El espacio y membresías quedaron eliminados de la base de datos
+    const remaining = await db.select().from(spaces).where(eq(spaces.id, space.id));
+    expect(remaining).toHaveLength(0);
+
+    const activeSpaces = await listActiveSpaces(db, owner.userId);
+    expect(activeSpaces.some((s) => s.id === space.id)).toBe(false);
+
+    // Puede crear otro espacio de pareja sin conflicto de unicidad
+    await expect(coupleSpace(owner.userId)).resolves.toBeDefined();
+  });
+
+  it("excludes unactivated couple spaces from listActiveSpaces if they have no pending invitation", async () => {
+    const owner = await person("no-inv-couple-owner");
+    const space = await coupleSpace(owner.userId);
+
+    // Sin invitación enviada, no se lista en espacios activos
+    const activeSpaces = await listActiveSpaces(db, owner.userId);
+    expect(activeSpaces.some((s) => s.id === space.id)).toBe(false);
   });
 
   it("sweeps an expired invitation out of the pending lists", async () => {

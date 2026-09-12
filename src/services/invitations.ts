@@ -52,10 +52,37 @@ export async function declineInvitation(db: Database, userId: string, email: str
   return Boolean(row);
 }
 
-/** Revoca una invitación todavía pendiente. */
+/** Revoca una invitación todavía pendiente. Si el espacio es de pareja y no ha sido activado, elimina el espacio pendiente. */
 export async function revokeInvitation(db: Database, spaceId: string, invitationId: string) {
-  const [row] = await db.update(spaceInvitations).set({ status: "revoked", updatedAt: new Date() }).where(and(eq(spaceInvitations.id, invitationId), eq(spaceInvitations.spaceId, spaceId), eq(spaceInvitations.status, "pending"))).returning({ id: spaceInvitations.id });
-  return Boolean(row);
+  const result = await db.execute<{ revoked_id: string | null; deleted_space_id: string | null }>(sql`
+    WITH locked_space AS (
+      SELECT id, type, activated_at
+      FROM spaces
+      WHERE id = ${spaceId}
+      FOR UPDATE
+    ),
+    revoked_invitation AS (
+      UPDATE space_invitations
+      SET status = 'revoked', updated_at = now()
+      WHERE id = ${invitationId} AND space_id = ${spaceId} AND status = 'pending'
+      RETURNING id
+    ),
+    deleted_space AS (
+      DELETE FROM spaces
+      WHERE id = ${spaceId}
+        AND EXISTS (
+          SELECT 1 FROM locked_space s, revoked_invitation r
+          WHERE s.type = 'couple' AND s.activated_at IS NULL
+        )
+      RETURNING id
+    )
+    SELECT
+      (SELECT id FROM revoked_invitation) AS revoked_id,
+      (SELECT id FROM deleted_space) AS deleted_space_id
+  `);
+
+  const row = (result.rows ?? result)[0] as { revoked_id: string | null; deleted_space_id: string | null } | undefined;
+  return Boolean(row?.revoked_id);
 }
 
 /**

@@ -136,6 +136,15 @@ async function readMemberships(db: Database, userId: string): Promise<Membership
         eq(spaceMembers.status, "active"),
         isNull(spaces.archivedAt),
         activeSpaceScope(),
+        sql`(
+          ${spaces.type} <> 'couple'
+          OR ${spaces.activatedAt} IS NOT NULL
+          OR EXISTS (
+            SELECT 1 FROM space_invitations
+            WHERE space_invitations.space_id = ${spaces.id}
+              AND space_invitations.status = 'pending'
+          )
+        )`,
       ),
     );
 
