@@ -55,24 +55,26 @@ async function spaceWithPartner(label: string) {
 }
 
 describe("invitations against PostgreSQL", () => {
-  it("does not consume an invitation or create a membership when countries differ", async () => {
+  it("sends an invitation to an existing account even when countries differ", async () => {
     const owner = await person("inv-country-owner");
     const partner = await person("inv-country-partner");
     await updateProfile(db, owner.userId, { countryCode: "ES" });
     await updateProfile(db, partner.userId, { countryCode: "VE" });
-    const ownerState = await getAccountState(db, owner.userId);
-    const [personal] = await db.select({ countryCode: spaces.countryCode }).from(spaces)
-      .where(eq(spaces.id, ownerState.personalSpaceId!));
-    expect(personal?.countryCode).toBe("ES");
     const space = await coupleSpace(owner.userId);
 
-    // Una persona ya conocida se rechaza al invitar.
-    await expect(createInvitation(db, {
+    const existing = await createInvitation(db, {
       spaceId: space.id, invitedBy: owner.userId, email: partner.email, role: "member",
-    })).rejects.toThrow("SPACE_COUNTRY_MISMATCH");
+    });
+    expect(existing.inviteeUserId).toBe(partner.userId);
+    expect(await acceptInvitation(db, partner.userId, existing.token)).toBeUndefined();
+    expect((await listMembers(db, space.id)).map((member) => member.userId)).not.toContain(partner.userId);
+  });
 
-    // La misma protección vive en la aceptación para invitaciones creadas
-    // antes de que la persona tuviera perfil/país.
+  it("keeps an invitation for a future account despite a later country mismatch", async () => {
+    const owner = await person("inv-country-future-owner");
+    await updateProfile(db, owner.userId, { countryCode: "ES" });
+    const space = await coupleSpace(owner.userId);
+
     const pending = await createInvitation(db, {
       spaceId: space.id,
       invitedBy: owner.userId,
@@ -105,7 +107,6 @@ describe("invitations against PostgreSQL", () => {
 
     const updated = await updateProfile(db, partner.userId, { countryCode: "VE" });
     expect(updated?.leftSharedSpaceIds).toEqual([space.id]);
-    expect((await getAccountState(db, partner.userId)).profile?.countryCode).toBe("VE");
     expect((await listMembers(db, space.id)).map((member) => member.userId)).not.toContain(partner.userId);
   });
 

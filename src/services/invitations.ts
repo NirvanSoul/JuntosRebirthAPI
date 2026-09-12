@@ -9,11 +9,7 @@ export function mayManageMembers(role: "owner" | "admin" | "member") { return ro
 export async function createInvitation(db: Database, input: { spaceId: string; invitedBy: string; email: string; role: "admin" | "member" }) {
   const token = encodeToken();
   const tokenHash = await hashToken(token);
-  const [knownUser] = await db.select({ id: user.id, countryCode: userProfiles.countryCode }).from(user).leftJoin(userProfiles, eq(userProfiles.userId, user.id)).where(eq(user.email, input.email)).limit(1);
-  const [spaceCountry] = await db.select({ countryCode: spaces.countryCode }).from(spaces).where(eq(spaces.id, input.spaceId)).limit(1);
-  // Para direcciones aún sin cuenta no existe país que contrastar; se valida de
-  // nuevo al aceptar y la invitación permanece íntegra si no coincide.
-  if (knownUser && knownUser.countryCode !== spaceCountry?.countryCode) throw new Error("SPACE_COUNTRY_MISMATCH");
+  const [knownUser] = await db.select({ id: user.id }).from(user).where(eq(user.email, input.email)).limit(1);
   // Se puede invitar a alguien que todavía no tiene cuenta: la invitación queda
   // pendiente por correo y `claimEmailInvitations` la vincula cuando esa persona
   // se registre. La fuente de verdad es `space_invitations`, no el usuario.
@@ -152,7 +148,7 @@ export async function acceptLinkedInvitation(db: Database, userId: string, invit
   return result.rows[0]?.space_id as string | undefined;
 }
 
-/** Used by the HTTP layer to distinguish a rejected country from an invalid token. */
+/** Used by the HTTP layer to distinguish a country rejection from an invalid invitation. */
 export async function invitationCountryMatches(db: Database, userId: string, invitationId?: string, token?: string) {
   const tokenHash = token ? await hashToken(token) : null;
   const result = await db.execute(sql`
