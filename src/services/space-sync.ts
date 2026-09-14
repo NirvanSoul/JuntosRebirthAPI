@@ -9,10 +9,12 @@ import {
   recurringTransactionSeries,
   spaces,
   transactionReferenceRates,
+  transactionAliases,
   transactions,
 } from "../db/schema";
 import { buildMovementSnapshot, type MovementSnapshot } from "./exchange-rates";
 import { exchangeSnapshotFromRows, snapshotReferenceRateValues, type ExchangeSnapshotDTO } from "./transactions";
+import { isUniqueViolation } from "../lib/pg";
 
 type Row = Record<string, unknown>;
 
@@ -36,7 +38,24 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 type Existing = { id: string; sourceInstallationId: string | null; sourceLocalId: string | null };
 type ExistingCategory = Existing & { templateKey?: string | null };
-type ExistingTransaction = Existing & { amountMinor: bigint; currency: string; occurredOn: string; accountingAmountMinorUsd: bigint | null };
+type ExistingTransaction = Existing & {
+  amountMinor: bigint;
+  currency: string;
+  occurredOn: string;
+  recurrenceSeriesId: string | null;
+  accountingAmountMinorUsd: bigint | null;
+};
+
+export class RecurrenceOccurrenceConflictError extends Error {
+  readonly details?: { recurrenceSeriesId: string; occurredOn: string };
+
+  constructor(recurrenceSeriesId?: string, occurredOn?: string) {
+    super("RECURRENCE_OCCURRENCE_CONFLICT");
+    if (recurrenceSeriesId && occurredOn) {
+      this.details = { recurrenceSeriesId, occurredOn };
+    }
+  }
+}
 
 /**
  * Traduce los identificadores locales del dispositivo a los remotos, en el
@@ -106,6 +125,76 @@ function resolveCategoryIds(existing: ExistingCategory[], rows: Row[], installat
   return resolved;
 }
 
+/** Resuelve la identidad compartida de cada ocurrencia recurrente. */
+function resolveTransactionIds(
+  existing: ExistingTransaction[],
+  aliases: { sourceInstallationId: string; sourceLocalId: string; transactionId: string }[],
+  rows: Row[],
+  installationId: string,
+  knownSeries: Map<string, string>,
+  fallbackDate: string,
+) {
+  const bySource = new Map<string, string>();
+  for (const row of existing) {
+    if (row.sourceInstallationId && row.sourceLocalId) {
+      bySource.set(`${row.sourceInstallationId}:${row.sourceLocalId}`, row.id);
+    }
+  }
+  for (const alias of aliases) {
+    bySource.set(`${alias.sourceInstallationId}:${alias.sourceLocalId}`, alias.transactionId);
+  }
+
+  const byOccurrence = new Map<string, string>();
+  for (const row of existing) {
+    if (row.recurrenceSeriesId) byOccurrence.set(`${row.recurrenceSeriesId}:${row.occurredOn}`, row.id);
+  }
+
+  const resolved = new Map<string, string>();
+  const payloadOccurrences = new Map<string, { id: string; signature: string }>();
+  for (const row of rows) {
+    const localId = text(row.id);
+    if (!localId) throw new Error("INVALID_PAYLOAD");
+    const seriesId = reference(knownSeries, row.recurrenceSeriesId);
+    const occurredOn = dateOnly(row.occurredOn, fallbackDate);
+
+    if (seriesId) {
+      const occurrenceKey = `${seriesId}:${occurredOn}`;
+      const signature = recurrenceOccurrenceSignature(row);
+      const inPayload = payloadOccurrences.get(occurrenceKey);
+      if (inPayload) {
+        if (inPayload.signature !== signature) {
+          throw new RecurrenceOccurrenceConflictError(seriesId, occurredOn);
+        }
+        resolved.set(localId, inPayload.id);
+        continue;
+      }
+
+      // La pareja serie-fecha es más fuerte que el id de la instalación: dos
+      // dispositivos que creen la misma ocurrencia deben converger aquí.
+      const id = byOccurrence.get(occurrenceKey)
+        ?? bySource.get(`${installationId}:${localId}`)
+        ?? (typeof row.remoteId === "string" && UUID.test(row.remoteId) ? row.remoteId : crypto.randomUUID());
+      payloadOccurrences.set(occurrenceKey, { id, signature });
+      resolved.set(localId, id);
+      continue;
+    }
+
+    const linked = bySource.get(`${installationId}:${localId}`);
+    const remoteId = typeof row.remoteId === "string" ? row.remoteId : null;
+    resolved.set(localId, linked ?? (remoteId && UUID.test(remoteId) ? remoteId : crypto.randomUUID()));
+  }
+  return resolved;
+}
+
+function recurrenceOccurrenceSignature(row: Row) {
+  // Excluye identificadores de réplica y relojes: no describen la ocurrencia.
+  const fields = [
+    "categoryId", "moneyAccountId", "type", "amountMinor", "currency", "title",
+    "note", "recurrence", "recurrenceGroupId", "isArchived", "customRateId",
+  ];
+  return JSON.stringify(fields.map((field) => row[field] ?? null));
+}
+
 /**
  * Sube un lote de cambios de un espacio compartido. Sustituye la RPC
  * `sync_couple_space_data`.
@@ -149,6 +238,7 @@ export async function syncSpaceData(
     existingSeries,
     existingTransactions,
     existingCategoryAliases,
+    existingTransactionAliases,
   ] = await Promise.all([
       db
         .select({
@@ -183,6 +273,7 @@ export async function syncSpaceData(
           amountMinor: transactions.amountMinor,
           currency: transactions.currency,
           occurredOn: transactions.occurredOn,
+          recurrenceSeriesId: transactions.recurrenceSeriesId,
           accountingAmountMinorUsd: transactions.accountingAmountMinorUsd,
         })
         .from(transactions)
@@ -195,12 +286,19 @@ export async function syncSpaceData(
         })
         .from(categoryAliases)
         .where(eq(categoryAliases.spaceId, spaceId)),
+      db
+        .select({
+          sourceInstallationId: transactionAliases.sourceInstallationId,
+          sourceLocalId: transactionAliases.sourceLocalId,
+          transactionId: transactionAliases.transactionId,
+        })
+        .from(transactionAliases)
+        .where(eq(transactionAliases.spaceId, spaceId)),
     ]);
 
   const categoryIds = resolveCategoryIds(existingCategories, payload.categories, installationId);
   const accountIds = resolveIds(existingAccounts, payload.moneyAccounts, installationId);
   const seriesIds = resolveIds(existingSeries, payload.recurringSeries, installationId);
-  const transactionIds = resolveIds(existingTransactions, payload.transactions, installationId);
 
   // La selección de CUSTOM no vive en `transactions`: solo existe en la fila
   // congelada. Se lee exclusivamente para conservarla cuando el cliente no
@@ -231,6 +329,14 @@ export async function syncSpaceData(
   const knownSeries = referenceMap(seriesIds, existingSeries);
 
   const now = new Date();
+  const transactionIds = resolveTransactionIds(
+    existingTransactions as ExistingTransaction[],
+    existingTransactionAliases,
+    payload.transactions,
+    installationId,
+    knownSeries,
+    now.toISOString().slice(0, 10),
+  );
   const source = (localId: string) => ({
     sourceInstallationId: installationId,
     sourceLocalId: localId,
@@ -446,9 +552,15 @@ export async function syncSpaceData(
     );
   }
 
+  const writtenTransactionIds = new Set<string>();
+  const syncedTransactionById = new Map<string, Omit<NonNullable<SpaceSyncResult["transactions"]>[number], "localId">>();
   for (const row of payload.transactions) {
     const localId = text(row.id);
     const id = transactionIds.get(localId)!;
+    // Dos réplicas idénticas de la misma ocurrencia en este lote escriben una
+    // sola fila canónica; sus alias se registran después del insert.
+    if (writtenTransactionIds.has(id)) continue;
+    writtenTransactionIds.add(id);
     const updatedAt = date(row.updatedAt, now);
     const isArchived = Boolean(row.isArchived);
     const categoryId = reference(knownCategories, row.categoryId);
@@ -518,8 +630,6 @@ export async function syncSpaceData(
             recurrenceGroupId: sql`excluded.recurrence_group_id`,
             recurrenceSeriesId: sql`excluded.recurrence_series_id`,
             sourceLocalTransactionId: sql`excluded.source_local_transaction_id`,
-            sourceInstallationId: sql`excluded.source_installation_id`,
-            sourceLocalId: sql`excluded.source_local_id`,
             createdBy: sql`COALESCE(${transactions.createdBy}, excluded.created_by)`,
             isArchived: sql`excluded.is_archived`,
             archivedAt: sql`excluded.archived_at`,
@@ -535,8 +645,7 @@ export async function syncSpaceData(
     }
 
     const priorRates = referenceRatesByTransaction.get(id);
-    syncedTransactions.push({
-      localId,
+    syncedTransactionById.set(id, {
       remoteId: id,
       updatedAt: updatedAt.toISOString(),
       accountingAmountMinorUsd: accountingAmountMinorUsd === null ? null : accountingAmountMinorUsd.toString(),
@@ -546,8 +655,41 @@ export async function syncSpaceData(
     });
   }
 
+  // Siempre se conserva el id local que cada instalación usa para la fila
+  // canónica. Esto evita que un reintento o un segundo dispositivo vuelva a
+  // proponer un UUID distinto para la misma ocurrencia funcional.
+  for (const row of payload.transactions) {
+    const localId = text(row.id);
+    const id = transactionIds.get(localId)!;
+    writes.push(
+      db
+        .insert(transactionAliases)
+        .values({ spaceId, sourceInstallationId: installationId, sourceLocalId: localId, transactionId: id })
+        .onConflictDoUpdate({
+          target: [
+            transactionAliases.spaceId,
+            transactionAliases.sourceInstallationId,
+            transactionAliases.sourceLocalId,
+          ],
+          set: { transactionId: sql`excluded.transaction_id`, updatedAt: sql`excluded.updated_at` },
+        }),
+    );
+    const synced = syncedTransactionById.get(id)!;
+    syncedTransactions.push({ localId, ...synced });
+  }
+
   if (writes.length > 0) {
-    await db.batch(writes as [never, ...never[]]);
+    try {
+      await db.batch(writes as [never, ...never[]]);
+    } catch (error) {
+      // La resolución previa cubre reintentos y lotes ya existentes. Esta es
+      // la última barrera para dos peticiones simultáneas que leyeron el
+      // espacio antes de que cualquiera escribiera.
+      if (isUniqueViolation(error, "transactions_series_occurred_on_idx")) {
+        throw new RecurrenceOccurrenceConflictError();
+      }
+      throw error;
+    }
   }
 
   return {

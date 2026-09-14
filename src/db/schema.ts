@@ -775,6 +775,52 @@ export const transactions = pgTable(
   ],
 );
 
+/**
+ * Identidad durable de una transacción en cada instalación. Para una
+ * ocurrencia recurrente el id local no es la identidad de negocio: varias
+ * instalaciones pueden apuntar al mismo movimiento canónico (serie, fecha).
+ */
+export const transactionAliases = pgTable(
+  "transaction_aliases",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    spaceId: uuid("space_id")
+      .notNull()
+      .references(() => spaces.id, { onDelete: "cascade" }),
+    sourceInstallationId: text("source_installation_id").notNull(),
+    sourceLocalId: text("source_local_id").notNull(),
+    transactionId: uuid("transaction_id")
+      .notNull()
+      .references(() => transactions.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex("transaction_aliases_source_local_idx").on(
+      table.spaceId,
+      table.sourceInstallationId,
+      table.sourceLocalId,
+    ),
+    index("transaction_aliases_transaction_idx").on(table.transactionId),
+  ],
+);
+
+export const transactionAliasesRelations = relations(transactionAliases, ({ one }) => ({
+  space: one(spaces, {
+    fields: [transactionAliases.spaceId],
+    references: [spaces.id],
+  }),
+  transaction: one(transactions, {
+    fields: [transactionAliases.transactionId],
+    references: [transactions.id],
+  }),
+}));
+
 export const recurringTransactionOccurrences = pgTable(
   "recurring_transaction_occurrences",
   {

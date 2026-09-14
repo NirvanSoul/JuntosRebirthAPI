@@ -9,7 +9,7 @@ import {
   type SpaceAccessVariables,
 } from "../middleware/space-access";
 import { buildChanges, buildSnapshot } from "../services/sync-snapshot";
-import { syncSpaceData } from "../services/space-sync";
+import { RecurrenceOccurrenceConflictError, syncSpaceData } from "../services/space-sync";
 import { findUserCountryCode } from "../services/account";
 import type { Bindings } from "../types/env";
 
@@ -24,6 +24,7 @@ const CLIENT_ERRORS: Record<string, ErrorCode> = {
   CUSTOM_RATE_NOT_FOUND: "CUSTOM_RATE_NOT_FOUND",
   VENEZUELA_RATES_UNAVAILABLE: "VENEZUELA_RATES_UNAVAILABLE",
   VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED: "VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED",
+  RECURRENCE_OCCURRENCE_CONFLICT: "RECURRENCE_OCCURRENCE_CONFLICT",
   SPACE_NOT_FOUND: "SPACE_NOT_FOUND",
 };
 
@@ -138,7 +139,12 @@ export function createSpaceSyncRoute(
       if (!code) {
         return errorResponse(c, "INTERNAL_SERVER_ERROR");
       }
-      return errorResponse(c, code);
+      return errorResponse(
+        c,
+        code,
+        undefined,
+        error instanceof RecurrenceOccurrenceConflictError ? error.details : undefined,
+      );
     }
   });
 

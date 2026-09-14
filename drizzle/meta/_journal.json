@@ -204,6 +204,13 @@
       "when": 1788354000000,
       "tag": "0028_cleanup_orphaned_couple_spaces",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1788357600000,
+      "tag": "0029_transaction_aliases",
+      "breakpoints": true
     }
   ]
 }

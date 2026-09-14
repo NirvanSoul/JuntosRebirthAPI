@@ -97,6 +97,26 @@ function rowsFor(captured: Captured[], table: string) {
   return captured.filter((entry) => entry.table === table && entry.op === "insert");
 }
 
+function recurringTransaction(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "44444444-4444-4444-8444-444444444444",
+    categoryId: "22222222-2222-4222-8222-222222222222",
+    moneyAccountId: null,
+    type: "expense",
+    amountMinor: 1250,
+    currency: "EUR",
+    title: "Suscripción",
+    occurredOn: "2026-08-20",
+    recurrence: "monthly",
+    recurrenceGroupId: null,
+    recurrenceSeriesId: "series-local",
+    isArchived: false,
+    createdAt: NOW,
+    updatedAt: NOW,
+    ...overrides,
+  };
+}
+
 describe("space bulk sync", () => {
   it("reuses the remote id already linked to this installation", async () => {
     const { db, captured } = fakeDatabase({
@@ -473,6 +493,87 @@ describe("space bulk sync", () => {
     expect(rowsFor(captured, "transactions")[0]?.values).toMatchObject({
       categoryId: "99999999-9999-4999-8999-999999999999",
     });
+  });
+
+  it("converges a recurring occurrence from another installation on its series and date", async () => {
+    const canonicalId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const seriesId = "55555555-5555-4555-8555-555555555555";
+    const { db, captured } = fakeDatabase({
+      categories: [{
+        id: "22222222-2222-4222-8222-222222222222",
+        sourceInstallationId: "install-1",
+        sourceLocalId: "category-local",
+      }],
+      series: [{ id: seriesId, sourceInstallationId: "install-1", sourceLocalId: "series-local" }],
+      transactions: [{
+        id: canonicalId,
+        sourceInstallationId: "install-1",
+        sourceLocalId: "old-local-id",
+        amountMinor: 1000n,
+        currency: "EUR",
+        occurredOn: "2026-08-20",
+        recurrenceSeriesId: seriesId,
+        accountingAmountMinorUsd: null,
+      }],
+    });
+
+    const result = await syncSpaceData(db, SPACE, "user-1", payload({
+      installationId: "install-2",
+      transactions: [recurringTransaction({ id: "device-2-occurrence", remoteId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" })],
+    }));
+
+    expect(rowsFor(captured, "transactions")[0]?.values?.id).toBe(canonicalId);
+    expect(rowsFor(captured, "transaction_aliases")[0]?.values).toMatchObject({
+      transactionId: canonicalId,
+      sourceInstallationId: "install-2",
+      sourceLocalId: "device-2-occurrence",
+    });
+    expect(result.transactions?.[0]?.remoteId).toBe(canonicalId);
+  });
+
+  it("rejects contradictory duplicate recurring occurrences in one payload before writing", async () => {
+    const { db, batch } = fakeDatabase({
+      categories: [{ id: "22222222-2222-4222-8222-222222222222", sourceInstallationId: "install-1", sourceLocalId: "category-local" }],
+      series: [{ id: "55555555-5555-4555-8555-555555555555", sourceInstallationId: "install-1", sourceLocalId: "series-local" }],
+    });
+
+    await expect(syncSpaceData(db, SPACE, "user-1", payload({
+      transactions: [
+        recurringTransaction(),
+        recurringTransaction({ id: "another-local-id", amountMinor: 9999 }),
+      ],
+    }))).rejects.toMatchObject({
+      message: "RECURRENCE_OCCURRENCE_CONFLICT",
+      details: { recurrenceSeriesId: "55555555-5555-4555-8555-555555555555", occurredOn: "2026-08-20" },
+    });
+    expect(batch).not.toHaveBeenCalled();
+  });
+
+  it("turns a concurrent recurrence unique violation into a domain conflict", async () => {
+    const { db, batch } = fakeDatabase();
+    batch.mockRejectedValueOnce({
+      code: "23505",
+      constraint: "transactions_series_occurred_on_idx",
+    });
+
+    await expect(syncSpaceData(db, SPACE, "user-1", payload({
+      categories: [category()],
+      recurringSeries: [{
+        id: "series-local",
+        categoryId: "22222222-2222-4222-8222-222222222222",
+        type: "expense",
+        amountMinor: 1250,
+        currency: "EUR",
+        title: "Suscripción",
+        frequency: "monthly",
+        startsOn: "2026-08-20",
+        nextOccurrenceOn: "2026-09-20",
+        isArchived: false,
+        createdAt: NOW,
+        updatedAt: NOW,
+      }],
+      transactions: [recurringTransaction()],
+    }))).rejects.toThrow("RECURRENCE_OCCURRENCE_CONFLICT");
   });
 
   it("writes everything in a single atomic batch", async () => {
