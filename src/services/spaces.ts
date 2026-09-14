@@ -82,6 +82,26 @@ export async function createSpaceWithOwner(
   // siembra el espacio personal); en el resto, las categorías las trae quien
   // las crea desde la app o el primer `sync` del espacio.
   const [ownerProfile] = await db.select({ countryCode: userProfiles.countryCode }).from(userProfiles).where(eq(userProfiles.userId, userId)).limit(1);
+
+  if (input.type === "couple" && typeof db.execute === "function") {
+    // Si la persona ya tenía un espacio de pareja previo no activado y sin
+    // invitaciones pendientes (por ejemplo porque falló el segundo paso al invitar
+    // o la invitación previa caducó o fue declinada), ese espacio huérfano
+    // bloquearía la creación por el índice único parcial. Lo eliminamos antes
+    // de crear el nuevo para garantizar idempotencia.
+    await db.execute(sql`
+      DELETE FROM spaces
+      WHERE created_by = ${userId}
+        AND type = 'couple'
+        AND activated_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM space_invitations
+          WHERE space_invitations.space_id = spaces.id
+            AND space_invitations.status = 'pending'
+        )
+    `);
+  }
+
   await db.batch([
     db.insert(spaces).values({
       id,

@@ -222,11 +222,13 @@ describe("Spaces service", () => {
     expect(created.activatedAt).toEqual(expect.any(Date));
   });
 
-  it("leaves a couple space inactive until the invitation is accepted", async () => {
+  it("leaves a couple space inactive until the invitation is accepted and clears orphaned unactivated couple spaces", async () => {
+    const executeMock = vi.fn().mockResolvedValue([]);
     const db = {
       select: vi.fn(() => ({ from: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) }) })),
       insert: vi.fn(() => ({ values: (values: unknown) => ({ values }) })),
       batch: vi.fn().mockResolvedValue([]),
+      execute: executeMock,
     } as unknown as Database;
 
     const created = await createSpaceWithOwner(db, "user-1", {
@@ -238,6 +240,8 @@ describe("Spaces service", () => {
 
     // El cliente deriva "esperando pareja" de `activatedAt === null`.
     expect(created.activatedAt).toBeNull();
+    // Limpia espacios huérfanos previos para prevenir COUPLE_SPACE_LIMIT.
+    expect(executeMock).toHaveBeenCalledTimes(1);
   });
 
   describe("POST /v1/spaces/:spaceId/cancel-pending-couple-invitation", () => {

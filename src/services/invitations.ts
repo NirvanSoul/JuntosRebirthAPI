@@ -28,28 +28,59 @@ export async function listInvitations(db: Database, spaceId: string): Promise<In
   return rows.map(serialize).map(withExpiry);
 }
 
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /**
- * La persona invitada rechaza. Distinto de `revokeInvitation`, que ejecuta
- * quien invitó: aquí la comprobación es que la invitación le corresponde, por
- * usuario vinculado o por correo.
+ * La persona invitada rechaza o el creador cancela la invitación. Si el espacio
+ * es de pareja y no ha sido activado, elimina el espacio pendiente.
  */
 export async function declineInvitation(db: Database, userId: string, email: string, invitationId: string) {
-  const [row] = await db
-    .update(spaceInvitations)
-    .set({ status: "declined", updatedAt: new Date() })
-    .where(
-      and(
-        eq(spaceInvitations.id, invitationId),
-        eq(spaceInvitations.status, "pending"),
-        sql`(${spaceInvitations.inviteeUserId} = ${userId} OR ${spaceInvitations.invitedEmail} = ${email.trim().toLowerCase()})`,
-      ),
+  if (!UUID_REGEX.test(invitationId)) return false;
+  const normalizedEmail = email.trim().toLowerCase();
+  const result = await db.execute<{ declined_id: string | null; deleted_space_id: string | null }>(sql`
+    WITH target_invitation AS (
+      SELECT id, space_id, invited_by
+      FROM space_invitations
+      WHERE id = ${invitationId}
+        AND status = 'pending'
+        AND (${spaceInvitations.inviteeUserId} = ${userId} OR ${spaceInvitations.invitedEmail} = ${normalizedEmail} OR ${spaceInvitations.invitedBy} = ${userId})
+      FOR UPDATE
+    ),
+    locked_space AS (
+      SELECT id, type, activated_at
+      FROM spaces
+      WHERE id IN (SELECT space_id FROM target_invitation)
+      FOR UPDATE
+    ),
+    declined_invitation AS (
+      UPDATE space_invitations
+      SET status = (CASE WHEN space_invitations.invited_by = ${userId} THEN 'revoked'::space_invitation_status ELSE 'declined'::space_invitation_status END),
+          updated_at = now()
+      WHERE id IN (SELECT id FROM target_invitation)
+      RETURNING id, space_id
+    ),
+    deleted_space AS (
+      DELETE FROM spaces
+      WHERE id IN (SELECT space_id FROM declined_invitation)
+        AND EXISTS (
+          SELECT 1 FROM locked_space s
+          WHERE s.type = 'couple' AND s.activated_at IS NULL
+        )
+      RETURNING id
     )
-    .returning({ id: spaceInvitations.id });
-  return Boolean(row);
+    SELECT
+      (SELECT id FROM declined_invitation) AS declined_id,
+      (SELECT id FROM deleted_space) AS deleted_space_id
+  `);
+
+  const row = (result.rows ?? result)[0] as { declined_id: string | null; deleted_space_id: string | null } | undefined;
+  return Boolean(row?.declined_id);
 }
 
 /** Revoca una invitación todavía pendiente. Si el espacio es de pareja y no ha sido activado, elimina el espacio pendiente. */
 export async function revokeInvitation(db: Database, spaceId: string, invitationId: string) {
+  if (!UUID_REGEX.test(spaceId) || !UUID_REGEX.test(invitationId)) return false;
   const result = await db.execute<{ revoked_id: string | null; deleted_space_id: string | null }>(sql`
     WITH locked_space AS (
       SELECT id, type, activated_at
@@ -84,10 +115,29 @@ export async function revokeInvitation(db: Database, spaceId: string, invitation
 /**
  * Marca como caducadas las invitaciones vencidas. Sin este barrido el estado
  * `expired` era inalcanzable y una invitación vieja seguía apareciendo como
- * pendiente en la app.
+ * pendiente en la app. Si el espacio es de pareja y no ha sido activado,
+ * elimina el espacio huérfano para no bloquear la creación de nuevos espacios.
  */
 export async function expireStaleInvitations(db: Database): Promise<number> {
-  const rows = await db.update(spaceInvitations).set({ status: "expired", updatedAt: new Date() }).where(and(eq(spaceInvitations.status, "pending"), lte(spaceInvitations.expiresAt, new Date()))).returning({ id: spaceInvitations.id });
+  const rows = await db
+    .update(spaceInvitations)
+    .set({ status: "expired", updatedAt: new Date() })
+    .where(and(eq(spaceInvitations.status, "pending"), lte(spaceInvitations.expiresAt, new Date())))
+    .returning({ id: spaceInvitations.id });
+
+  if (rows.length > 0) {
+    await db.execute(sql`
+      DELETE FROM spaces
+      WHERE type = 'couple'
+        AND activated_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM space_invitations
+          WHERE space_invitations.space_id = spaces.id
+            AND space_invitations.status = 'pending'
+        )
+    `);
+  }
+
   return rows.length;
 }
 
@@ -125,6 +175,7 @@ export async function acceptInvitation(db: Database, userId: string, token: stri
 
 /** Accepts an invitation shown inside the authenticated app after bootstrap linked it. */
 export async function acceptLinkedInvitation(db: Database, userId: string, invitationId: string) {
+  if (!UUID_REGEX.test(invitationId)) return undefined;
   const result = await db.execute(sql`
     WITH accepted AS (
       UPDATE space_invitations SET status='accepted', accepted_at=now(), updated_at=now()
@@ -150,6 +201,7 @@ export async function acceptLinkedInvitation(db: Database, userId: string, invit
 
 /** Used by the HTTP layer to distinguish a country rejection from an invalid invitation. */
 export async function invitationCountryMatches(db: Database, userId: string, invitationId?: string, token?: string) {
+  if (invitationId && !UUID_REGEX.test(invitationId)) return false;
   const tokenHash = token ? await hashToken(token) : null;
   const result = await db.execute(sql`
     SELECT (p.country_code IS NOT DISTINCT FROM s.country_code) AS matches

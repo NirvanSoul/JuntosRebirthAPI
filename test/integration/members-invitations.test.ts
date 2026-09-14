@@ -5,6 +5,7 @@ import { cancelPendingCoupleSpace, createSpaceWithOwner, listActiveSpaces } from
 import {
   acceptInvitation,
   createInvitation,
+  declineInvitation,
   expireStaleInvitations,
   listInvitations,
   listIncomingInvitations,
@@ -293,7 +294,43 @@ describe("invitations against PostgreSQL", () => {
     expect(activeSpaces.some((s) => s.id === space.id)).toBe(false);
   });
 
-  it("sweeps an expired invitation out of the pending lists", async () => {
+  it("replaces an unactivated orphaned couple space when creating a new couple space without limit conflict", async () => {
+    const owner = await person("orphan-replace-owner");
+    const space1 = await coupleSpace(owner.userId);
+
+    // Sin invitación enviada, el espacio está huérfano.
+    // Al intentar crear otro espacio de pareja, debe eliminar el huérfano y tener éxito.
+    const space2 = await coupleSpace(owner.userId);
+    expect(space2.id).toBeDefined();
+    expect(space2.id).not.toBe(space1.id);
+
+    const remaining = await db.select().from(spaces).where(eq(spaces.id, space1.id));
+    expect(remaining).toHaveLength(0);
+  });
+
+  it("declining an invitation on an unactivated couple space deletes the space", async () => {
+    const owner = await person("inv-decline-owner");
+    const partner = await person("inv-decline-partner");
+    const space = await coupleSpace(owner.userId);
+
+    const created = await createInvitation(db, {
+      spaceId: space.id,
+      invitedBy: owner.userId,
+      email: partner.email,
+      role: "member",
+    });
+
+    expect(await declineInvitation(db, partner.userId, partner.email, created.invitation.id)).toBe(true);
+
+    // El espacio quedó eliminado de la base de datos
+    const remaining = await db.select().from(spaces).where(eq(spaces.id, space.id));
+    expect(remaining).toHaveLength(0);
+
+    // El creador puede volver a crear otro espacio de pareja sin conflicto
+    await expect(coupleSpace(owner.userId)).resolves.toBeDefined();
+  });
+
+  it("sweeps an expired invitation out of the pending lists and cleans up the unactivated space", async () => {
     const owner = await person("inv-expire-owner");
     const partner = await person("inv-expire-partner");
     const space = await coupleSpace(owner.userId);
@@ -319,7 +356,15 @@ describe("invitations against PostgreSQL", () => {
       .select({ status: spaceInvitations.status })
       .from(spaceInvitations)
       .where(eq(spaceInvitations.id, created.invitation.id));
-    expect(swept?.status).toBe("expired");
+    // Al ser un espacio de pareja no activado, el espacio y sus invitaciones se eliminaron en cascada
+    expect(swept).toBeUndefined();
+
+    // El espacio huérfano no activado fue eliminado de la base
+    const remaining = await db.select().from(spaces).where(eq(spaces.id, space.id));
+    expect(remaining).toHaveLength(0);
+
+    // El creador puede volver a crear otro espacio de pareja sin conflicto
+    await expect(coupleSpace(owner.userId)).resolves.toBeDefined();
   });
 });
 
