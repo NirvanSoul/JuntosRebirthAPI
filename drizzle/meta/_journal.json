@@ -225,6 +225,13 @@
       "when": 1788364800000,
       "tag": "0031_single_active_couple_membership",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1788368400000,
+      "tag": "0032_sync_polling_indexes",
+      "breakpoints": true
     }
   ]
 }

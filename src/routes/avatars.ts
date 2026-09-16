@@ -118,7 +118,7 @@ export function createAvatarsRoute(deps: Deps = defaults) {
 
       return new Response(object.body, {
         headers: {
-          "Content-Type": object.httpMetadata?.contentType ?? AVATAR_CONTENT_TYPE,
+          "Content-Type": AVATAR_CONTENT_TYPE,
           "Cache-Control": "private, max-age=300",
           ETag: object.httpEtag,
         },

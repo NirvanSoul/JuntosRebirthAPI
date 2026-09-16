@@ -168,12 +168,18 @@ describe("avatars", () => {
   });
 
   it("serves the avatar of someone in a shared space", async () => {
-    const { app, env } = appWith({ ...deps }, { AVATARS: fakeBucket({ body: "jpeg" }) });
+    const bucket = fakeBucket({ body: "jpeg" });
+    const { app, env } = appWith({ ...deps }, { AVATARS: bucket });
 
-    const response = await app.request("/v1/avatars/partner-1", {}, env);
+    const response = await app.request(
+      "/v1/avatars/partner-1?v=2026-09-16T12%3A30%3A45.123Z",
+      {},
+      env,
+    );
 
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("image/jpeg");
+    expect(bucket.get).toHaveBeenCalledWith("partner-1/avatar.jpg");
   });
 
   it("short-circuits the membership check for your own avatar", async () => {

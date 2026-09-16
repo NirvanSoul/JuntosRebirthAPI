@@ -15,7 +15,7 @@ const bindings: Bindings = {
 };
 
 const currentUser = { id: "user-1", name: "Ada", email: "ada@example.com", image: null };
-const profile = { displayName: "Ada", locale: "es", defaultCurrency: "EUR", countryCode: null, avatarPath: null };
+const profile = { displayName: "Ada", locale: "es", defaultCurrency: "EUR", countryCode: null, avatarPath: null, avatarUpdatedAt: null };
 const personalSpace = { id: "space-1", name: "Personal", type: "personal" as const, currency: "EUR", timezone: "Europe/Madrid", role: "owner" as const };
 
 function createTestApp(userId = "user-1") {
@@ -27,6 +27,7 @@ function createTestApp(userId = "user-1") {
   const deps = {
     createDb: vi.fn(() => ({})),
     findCurrentUser: vi.fn().mockResolvedValue(currentUser),
+    findCurrentAccount: vi.fn().mockResolvedValue({ user: currentUser, profile, personalSpaceId: "space-1", activeFinancialContext: null }),
     bootstrapAccount,
     getAccountState: vi.fn().mockResolvedValue({ profile, personalSpaceId: "space-1" }),
     updateProfile: vi.fn().mockResolvedValue(profile),
@@ -34,7 +35,7 @@ function createTestApp(userId = "user-1") {
   const testApp = new Hono<{ Bindings: Bindings; Variables: AuthVariables }>();
   testApp.use("/v1/*", createRequireAuth(async () => (userId ? { userId, emailVerified: true } : null)));
   testApp.route("/v1", createAccountRoute(deps as never));
-  return { testApp, deps: deps as unknown as { bootstrapAccount: ReturnType<typeof vi.fn>; updateProfile: ReturnType<typeof vi.fn>; getAccountState: ReturnType<typeof vi.fn>; findCurrentUser: ReturnType<typeof vi.fn> } };
+  return { testApp, deps: deps as unknown as { bootstrapAccount: ReturnType<typeof vi.fn>; updateProfile: ReturnType<typeof vi.fn>; getAccountState: ReturnType<typeof vi.fn>; findCurrentUser: ReturnType<typeof vi.fn>; findCurrentAccount: ReturnType<typeof vi.fn> } };
 }
 
 describe("Account routes", () => {
@@ -56,6 +57,7 @@ describe("Account routes", () => {
     const deps = {
       createDb: vi.fn(() => ({})),
       findCurrentUser: vi.fn().mockResolvedValue(currentUser),
+      findCurrentAccount: vi.fn().mockResolvedValue({ user: currentUser, profile, personalSpaceId: "space-1", activeFinancialContext: null }),
       getAccountState: vi.fn().mockResolvedValue({ profile: { ...profile, countryCode: "VE" }, personalSpaceId: "space-1" }),
     } as unknown as typeof account & { createDb: () => unknown };
     const testApp = new Hono<{ Bindings: Bindings; Variables: AuthVariables }>();
@@ -116,7 +118,7 @@ describe("Account routes", () => {
     const { testApp } = createTestApp();
     const response = await testApp.request("/v1/me", {}, bindings);
     await expect(response.json()).resolves.toEqual({
-      data: { user: currentUser, profile, personalSpaceId: "space-1", bootstrapRequired: false },
+      data: { user: currentUser, profile, personalSpaceId: "space-1", activeFinancialContext: null, bootstrapRequired: false },
     });
   });
 
@@ -127,6 +129,34 @@ describe("Account routes", () => {
     const valid = await testApp.request("/v1/me/profile", { method: "PATCH", body: JSON.stringify({ displayName: " Ada Lovelace ", defaultCurrency: "usd" }) }, bindings);
     expect(valid.status).toBe(200);
     expect(deps.updateProfile).toHaveBeenCalledWith(expect.anything(), "user-1", { displayName: "Ada Lovelace", defaultCurrency: "USD" });
+  });
+
+  it("trims display names and enforces the 60 character contract", async () => {
+    const { testApp, deps } = createTestApp();
+    const sixtyCharacters = "a".repeat(60);
+
+    const accepted = await testApp.request(
+      "/v1/me/profile",
+      { method: "PATCH", body: JSON.stringify({ displayName: `  ${sixtyCharacters}  ` }) },
+      bindings,
+    );
+    expect(accepted.status).toBe(200);
+    expect(deps.updateProfile).toHaveBeenLastCalledWith(
+      expect.anything(),
+      "user-1",
+      { displayName: sixtyCharacters },
+    );
+
+    deps.updateProfile.mockClear();
+    for (const displayName of ["   ", "a".repeat(61)]) {
+      const rejected = await testApp.request(
+        "/v1/me/profile",
+        { method: "PATCH", body: JSON.stringify({ displayName }) },
+        bindings,
+      );
+      expect(rejected.status).toBe(400);
+    }
+    expect(deps.updateProfile).not.toHaveBeenCalled();
   });
 
   it.each(["XX-INVALID", "ZZ", "EU", "VEN", "", null, 42])("rejects unsupported countryCode %j", async (countryCode) => {
@@ -156,12 +186,11 @@ describe("Account routes", () => {
 
   it("GET /v1/me returns the stored Venezuelan profile despite another user ID in the query", async () => {
     const { testApp, deps } = createTestApp();
-    deps.getAccountState.mockResolvedValueOnce({ profile: { ...profile, countryCode: "VE" }, personalSpaceId: "space-1" });
+    deps.findCurrentAccount.mockResolvedValueOnce({ user: currentUser, profile: { ...profile, countryCode: "VE" }, personalSpaceId: "space-1", activeFinancialContext: null });
     const response = await testApp.request("/v1/me?userId=other-user", {}, bindings);
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ data: { profile: { countryCode: "VE" }, bootstrapRequired: false } });
-    expect(deps.findCurrentUser).toHaveBeenCalledWith(expect.anything(), "user-1");
-    expect(deps.getAccountState).toHaveBeenCalledWith(expect.anything(), "user-1");
+    expect(deps.findCurrentAccount).toHaveBeenCalledWith(expect.anything(), "user-1");
   });
 
   it("cannot redirect a profile update to another user", async () => {

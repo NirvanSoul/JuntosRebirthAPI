@@ -1,7 +1,7 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Database } from "../db/client";
-import { spaceMembers, userProfiles } from "../db/schema";
+import { spaceMembers, spaces, userProfiles } from "../db/schema";
 import { readJpegInfo } from "../lib/jpeg";
 
 /** Mismos límites que el bucket `avatars` de la base anterior. */
@@ -57,17 +57,29 @@ export async function saveAvatar(
   body: ArrayBuffer,
 ): Promise<{ avatarPath: string; avatarUpdatedAt: Date }> {
   const avatarPath = avatarKey(userId);
-  const avatarUpdatedAt = new Date();
 
   await bucket.put(avatarPath, body, {
     httpMetadata: { contentType: AVATAR_CONTENT_TYPE },
   });
-  await db
+  const [profile] = await db
     .update(userProfiles)
-    .set({ avatarPath, avatarUpdatedAt, updatedAt: avatarUpdatedAt })
-    .where(eq(userProfiles.userId, userId));
+    .set({
+      avatarPath,
+      // La ruta del objeto es estable, por lo que este sello es la única clave
+      // de invalidación de caché. El incremento mínimo evita repetir versión
+      // incluso si dos cargas se procesan dentro del mismo milisegundo.
+      avatarUpdatedAt: sql<Date>`CASE
+        WHEN ${userProfiles.avatarUpdatedAt} IS NULL THEN clock_timestamp()
+        ELSE GREATEST(clock_timestamp(), ${userProfiles.avatarUpdatedAt} + interval '1 millisecond')
+      END`,
+      updatedAt: sql<Date>`clock_timestamp()`,
+    })
+    .where(eq(userProfiles.userId, userId))
+    .returning({ avatarUpdatedAt: userProfiles.avatarUpdatedAt });
 
-  return { avatarPath, avatarUpdatedAt };
+  if (!profile?.avatarUpdatedAt) throw new Error("PROFILE_NOT_FOUND");
+
+  return { avatarPath, avatarUpdatedAt: profile.avatarUpdatedAt };
 }
 
 export async function deleteAvatar(
@@ -100,12 +112,14 @@ export async function sharesActiveSpace(
     .select({ spaceId: viewer.spaceId })
     .from(viewer)
     .innerJoin(owner, eq(owner.spaceId, viewer.spaceId))
+    .innerJoin(spaces, eq(spaces.id, viewer.spaceId))
     .where(
       and(
         eq(viewer.userId, viewerId),
         eq(viewer.status, "active"),
         eq(owner.userId, ownerId),
         eq(owner.status, "active"),
+        isNull(spaces.archivedAt),
       ),
     )
     .limit(1);

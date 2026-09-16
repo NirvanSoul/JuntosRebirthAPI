@@ -2,6 +2,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { bootstrapAccount, findCurrentUser } from "../../src/services/account";
 import { createSpaceWithOwner, listActiveSpaces } from "../../src/services/spaces";
+import { createInvitation } from "../../src/services/invitations";
 import { buildSnapshot } from "../../src/services/sync-snapshot";
 import { categories, spaces } from "../../src/db/schema";
 import { cleanupTestUsers, createTestUser, testDb } from "./harness";
@@ -79,27 +80,44 @@ describe("space creation against PostgreSQL", () => {
       .where(eq(spaces.id, space.id));
     expect(stored?.activatedAt).toBeNull();
 
+    // Con invitación pendiente, aparece en listActiveSpaces como esperando pareja
+    await createInvitation(db, {
+      spaceId: space.id,
+      invitedBy: userId,
+      email: "couple-partner@integration.test",
+      role: "member",
+    });
+
     const listed = await listActiveSpaces(db, userId);
     expect(listed.find((item) => item.id === space.id)?.activatedAt).toBeNull();
   });
 
   it("refuses a second active couple space", async () => {
     const userId = await createTestUser(db, "couple2");
-    await createSpaceWithOwner(db, userId, {
+    const space = await createSpaceWithOwner(db, userId, {
       name: "Juntos",
       type: "couple",
       currency: "EUR",
       timezone: "UTC",
     });
 
-    // Lo garantiza el índice parcial, no la lógica de aplicación.
+    // Activa el primer espacio de pareja
+    await db
+      .update(spaces)
+      .set({ activatedAt: new Date() })
+      .where(eq(spaces.id, space.id));
+
+    // Lo garantiza el índice parcial sobre (created_by, type) WHERE activated_at IS NOT NULL
     await expect(
-      createSpaceWithOwner(db, userId, {
+      db.insert(spaces).values({
+        id: crypto.randomUUID(),
         name: "Otro Juntos",
         type: "couple",
         currency: "EUR",
         timezone: "UTC",
+        createdBy: userId,
+        activatedAt: new Date(),
       }),
-    ).rejects.toMatchObject({ code: "23505" });
+    ).rejects.toMatchObject({ cause: { code: "23505" } });
   });
 });

@@ -110,6 +110,22 @@ type Memberships = {
   serverTime: string;
 };
 
+/**
+ * Neon HTTP agrupa sentencias independientes en una única llamada. En el
+ * ciclo de 2 s esto evita cuatro viajes de red por un delta sin cambios. Los
+ * mocks unitarios conservan el fallback paralelo porque no implementan
+ * `batch`.
+ */
+async function runReadBatch<T extends readonly unknown[]>(
+  db: Database,
+  queries: T,
+): Promise<{ -readonly [K in keyof T]: Awaited<T[K]> }> {
+  if (typeof (db as any).batch === "function") {
+    return (db as any).batch(queries) as Promise<{ -readonly [K in keyof T]: Awaited<T[K]> }>;
+  }
+  return Promise.all(queries) as Promise<{ -readonly [K in keyof T]: Awaited<T[K]> }>;
+}
+
 async function readMemberships(db: Database, userId: string): Promise<Memberships> {
   const rows = await db
     .select({
@@ -159,7 +175,7 @@ async function readMemberships(db: Database, userId: string): Promise<Membership
 }
 
 async function readDeltaCollections(db: Database, spaceIds: string[], since: Date) {
-  const [categoryRows, accountRows, seriesRows, transactionRows] = await Promise.all([
+  const [categoryRows, accountRows, seriesRows, transactionRows] = await runReadBatch(db, [
     db
       .select({
         id: categories.id,
@@ -247,6 +263,9 @@ async function readDeltaCollections(db: Database, spaceIds: string[], since: Dat
   const accountIds = accountRows.map((row) => row.id);
   const transactionIds = transactionRows.map((row) => row.id);
 
+  // Las colecciones hijas pueden ser `[]` si su padre no cambió. Neon batch
+  // solo admite queries Drizzle, no valores ya resueltos; en ese caso estas
+  // lecturas condicionales se ejecutan en paralelo (y normalmente son cero).
   const [budgetRows, balanceRows, referenceRateRows] = await Promise.all([
     categoryIds.length > 0
       ? db
@@ -369,7 +388,7 @@ export async function buildSnapshot(db: Database, userId: string): Promise<Snaps
 
   // Orden exacto de lecturas conservado para compatibilidad con mocks y tests unitarios.
   const [memberRows, categoryRows, budgetRows, accountRows, balanceRows, seriesRows, transactionRows, referenceRateRows] =
-    await Promise.all([
+    await runReadBatch(db, [
       db
         .select({
           spaceId: spaceMembers.spaceId,

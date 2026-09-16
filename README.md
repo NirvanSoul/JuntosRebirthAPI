@@ -182,3 +182,34 @@ referencias devuelven
 - **Espacios completos**: `spaces` se devuelve siempre completo para que el cliente valide si hubo cambios de membresía, país o contexto financiero.
 - **Colecciones delta**: Las 4 colecciones (`categories`, `moneyAccounts`, `recurringSeries`, `transactions`) solo incluyen filas con `server_updated_at` posterior al umbral con solape. Las tablas hijas (`category_budgets`, `money_account_balances`, `transaction_reference_rates`) solo se leen para los padres que cambiaron.
 - **Cursor de retorno**: La respuesta incluye `serverTime` (reloj de la base) para ser utilizado en el siguiente ciclo.
+
+El backend está dimensionado para el polling activo de 2 s: no hay un límite
+de aplicación para estas rutas (los límites de Better Auth solo cubren
+autenticación), las lecturas delta usan índices `(space_id,
+server_updated_at)` y las membresías activas índices parciales. Las lecturas
+independientes de snapshot/delta se envían a Neon en batches, en vez de abrir
+una petición de base por colección. Workers emite una métrica estructurada
+`sync_poll_request` para `sync_changes`, `account_me`, `space_members` y
+`space_sync`; incluye latencia, status, 429 y solicitudes simultáneas dentro
+del isolate, sin cursores ni identificadores. Los errores se registran siempre
+y los éxitos se muestrean al 1 % por defecto para que la telemetría no escale
+linealmente con el polling; `SYNC_POLLING_METRICS_SAMPLE_RATE` admite un valor
+entre `0` y `1` para ajustar esa fracción.
+
+Antes de desplegar un cambio de capacidad, ejecutar en *staging* con una
+sesión de prueba:
+
+```bash
+JUNTOSS_API_BASE_URL=https://api-staging.example.com \
+JUNTOSS_API_AUTHORIZATION='Bearer ...' \
+JUNTOSS_SPACE_IDS='uuid-del-espacio-compartido' \
+npm run load:sync
+```
+
+Por defecto genera 30 ciclos por sesión, uno cada 2 s. Usar
+`JUNTOSS_LOAD_CONCURRENCY` para simular sesiones distintas y
+`JUNTOSS_LOAD_INCLUDE_SYNC=1` para incluir el `POST /sync` idempotente con un
+lote vacío. El resumen reporta p50/p95/p99, errores de transporte, estados y
+429 por endpoint; falla con salida distinta de cero si detecta 429 o errores.
+Los umbrales se pueden endurecer con `JUNTOSS_LOAD_MAX_P95_MS`,
+`JUNTOSS_LOAD_MAX_429` y `JUNTOSS_LOAD_MAX_ERROR_RATE`.

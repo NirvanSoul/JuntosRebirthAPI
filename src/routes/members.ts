@@ -26,10 +26,12 @@ export function createMembersRoute(
 
   route.get("/", async (c) => {
     try {
-      const members = await deps.listMembers(
-        deps.createDb(c.env.DATABASE_URL),
-        c.req.param("spaceId")!,
-      );
+      const members = (
+        await deps.listMembers(
+          deps.createDb(c.env.DATABASE_URL),
+          c.req.param("spaceId")!,
+        )
+      ).map(deps.memberProfile);
       return c.json({ data: { members } });
     } catch {
       return errorResponse(c, "INTERNAL_SERVER_ERROR");

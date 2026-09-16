@@ -405,6 +405,12 @@ export const spaceMembers = pgTable(
   (table) => [
     uniqueIndex("space_members_space_user_idx").on(table.spaceId, table.userId),
     index("space_members_userId_idx").on(table.userId),
+    index("space_members_active_user_space_idx")
+      .on(table.userId, table.spaceId)
+      .where(sql`${table.status} = 'active'`),
+    index("space_members_active_space_user_idx")
+      .on(table.spaceId, table.userId)
+      .where(sql`${table.status} = 'active'`),
   ],
 );
 

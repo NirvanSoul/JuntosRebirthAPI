@@ -18,6 +18,7 @@ export type Profile = {
   defaultCurrency: string;
   countryCode: string | null;
   avatarPath: string | null;
+  avatarUpdatedAt: Date | null;
 };
 
 export type PersonalSpace = {
@@ -36,6 +37,13 @@ export type FinancialContext = {
   personalSpaceId: string;
 };
 
+export type CurrentAccount = {
+  user: CurrentUser;
+  profile: Profile | null;
+  personalSpaceId: string | null;
+  activeFinancialContext: FinancialContext | null;
+};
+
 export async function findCurrentUser(
   db: Database,
   userId: string,
@@ -45,6 +53,63 @@ export async function findCurrentUser(
     .from(user)
     .where(eq(user.id, userId));
   return row ?? null;
+}
+
+/**
+ * Lectura compacta para `GET /me`. El polling antes requería una consulta de
+ * usuario, otra de perfil y una tercera para el contexto financiero; este
+ * join por claves primarias conserva la respuesta y usa una sola lectura.
+ */
+export async function findCurrentAccount(
+  db: Database,
+  userId: string,
+): Promise<CurrentAccount | null> {
+  const [row] = await db
+    .select({
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      image: user.image,
+      displayName: userProfiles.displayName,
+      locale: userProfiles.locale,
+      defaultCurrency: userProfiles.defaultCurrency,
+      countryCode: userProfiles.countryCode,
+      avatarPath: userProfiles.avatarPath,
+      avatarUpdatedAt: userProfiles.avatarUpdatedAt,
+      personalSpaceId: userProfiles.personalSpaceId,
+      contextId: financialContexts.id,
+      contextCountryCode: financialContexts.countryCode,
+      canonicalCurrency: financialContexts.canonicalCurrency,
+      contextPersonalSpaceId: financialContexts.personalSpaceId,
+    })
+    .from(user)
+    .leftJoin(userProfiles, eq(userProfiles.userId, user.id))
+    .leftJoin(financialContexts, eq(userProfiles.activeFinancialContextId, financialContexts.id))
+    .where(eq(user.id, userId));
+
+  if (!row) return null;
+  return {
+    user: { id: row.id, name: row.name, email: row.email, image: row.image },
+    profile: row.displayName === null
+      ? null
+      : {
+          displayName: row.displayName,
+          locale: row.locale!,
+          defaultCurrency: row.defaultCurrency!,
+          countryCode: row.countryCode,
+          avatarPath: row.avatarPath,
+          avatarUpdatedAt: row.avatarUpdatedAt,
+        },
+    personalSpaceId: row.personalSpaceId,
+    activeFinancialContext: row.contextId
+      ? {
+          id: row.contextId,
+          countryCode: row.contextCountryCode!,
+          canonicalCurrency: row.canonicalCurrency!,
+          personalSpaceId: row.contextPersonalSpaceId!,
+        }
+      : null,
+  };
 }
 
 export async function bootstrapAccount(
@@ -145,6 +210,7 @@ export async function getAccountState(db: Database, userId: string) {
       defaultCurrency: userProfiles.defaultCurrency,
       countryCode: userProfiles.countryCode,
       avatarPath: userProfiles.avatarPath,
+      avatarUpdatedAt: userProfiles.avatarUpdatedAt,
       personalSpaceId: userProfiles.personalSpaceId,
       activeFinancialContextId: userProfiles.activeFinancialContextId,
     })
@@ -159,6 +225,7 @@ export async function getAccountState(db: Database, userId: string) {
           defaultCurrency: profile.defaultCurrency,
           countryCode: profile.countryCode,
           avatarPath: profile.avatarPath,
+          avatarUpdatedAt: profile.avatarUpdatedAt,
         }
       : null,
     personalSpaceId: profile?.personalSpaceId ?? null,
@@ -239,7 +306,7 @@ export async function updateProfile(
           personal_space_id=(SELECT personal_space_id FROM activated_context),
           active_financial_context_id=(SELECT id FROM activated_context), updated_at=now()
         WHERE user_id=${userId}
-        RETURNING display_name, locale, default_currency, country_code, avatar_path
+        RETURNING display_name, locale, default_currency, country_code, avatar_path, avatar_updated_at
       )
       -- El snapshot de esta sentencia conserva las membresías anteriores.
       -- El trigger user_profiles_country_memberships materializa la salida
@@ -253,7 +320,13 @@ export async function updateProfile(
       ) AS left_shared_space_ids FROM changed
     `);
     const row = result.rows[0];
-    return row ? { displayName: row.display_name as string, locale: row.locale as string, defaultCurrency: row.default_currency as string, countryCode: row.country_code as string | null, avatarPath: row.avatar_path as string | null, leftSharedSpaceIds: row.left_shared_space_ids as string[] } : null;
+    if (row && input.displayName) {
+      await db
+        .update(user)
+        .set({ name: input.displayName, updatedAt: new Date() })
+        .where(eq(user.id, userId));
+    }
+    return row ? { displayName: row.display_name as string, locale: row.locale as string, defaultCurrency: row.default_currency as string, countryCode: row.country_code as string | null, avatarPath: row.avatar_path as string | null, avatarUpdatedAt: row.avatar_updated_at as Date | null, leftSharedSpaceIds: row.left_shared_space_ids as string[] } : null;
   }
   const [profile] = await db
     .update(userProfiles)
@@ -265,7 +338,14 @@ export async function updateProfile(
       defaultCurrency: userProfiles.defaultCurrency,
       countryCode: userProfiles.countryCode,
       avatarPath: userProfiles.avatarPath,
+      avatarUpdatedAt: userProfiles.avatarUpdatedAt,
     });
+  if (profile && input.displayName) {
+    await db
+      .update(user)
+      .set({ name: input.displayName, updatedAt: new Date() })
+      .where(eq(user.id, userId));
+  }
   return profile ?? null;
 }
 
@@ -300,6 +380,7 @@ async function findProfile(db: Database, userId: string): Promise<Profile | null
       defaultCurrency: userProfiles.defaultCurrency,
       countryCode: userProfiles.countryCode,
       avatarPath: userProfiles.avatarPath,
+      avatarUpdatedAt: userProfiles.avatarUpdatedAt,
     })
     .from(userProfiles)
     .where(eq(userProfiles.userId, userId));
@@ -332,5 +413,5 @@ async function findPersonalSpace(
 }
 
 function normalizeDisplayName(value: string) {
-  return value.trim().slice(0, 80) || "Usuario";
+  return value.trim().slice(0, 60) || "Usuario";
 }

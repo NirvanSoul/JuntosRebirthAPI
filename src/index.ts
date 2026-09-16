@@ -27,6 +27,7 @@ import { createChangesRoute, createSnapshotRoute, createSpaceSyncRoute } from ".
 import { createAvatarsRoute } from "./routes/avatars";
 import { createPushTokensRoute } from "./routes/push-tokens";
 import { createImportsRoute } from "./routes/imports";
+import { observeSyncPolling } from "./middleware/sync-observability";
 
 const app = new Hono<{ Bindings: Bindings }>();
 
@@ -83,6 +84,13 @@ app.route("/v1/exchange-rates", exchangeRatesRoute);
 // Toda ruta v1 restante es privada. Esta única barrera evita que un endpoint
 // nuevo quede expuesto por omitir un `app.use` específico.
 app.use("/v1/*", requireAuth);
+// El cliente consulta estos recursos cada dos segundos cuando está activo. Las
+// métricas estructuradas permiten vigilar p95/p99, 429 y solapamientos sin
+// registrar identificadores ni payloads de personas o espacios.
+app.use("/v1/sync/changes", observeSyncPolling("sync_changes"));
+app.use("/v1/me", observeSyncPolling("account_me"));
+app.use("/v1/spaces/:spaceId/members", observeSyncPolling("space_members"));
+app.use("/v1/spaces/:spaceId/sync", observeSyncPolling("space_sync"));
 app.route("/v1", accountRoute);
 app.route("/v1/exchange/custom-rates", createCustomExchangeRatesRoute());
 app.route("/v1", createAvatarsRoute());

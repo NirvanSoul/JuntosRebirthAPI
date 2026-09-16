@@ -14,4 +14,6 @@ export type Bindings = {
   AVATARS?: R2Bucket;
   /** Set only for local/development Workers to widen the browser CORS allowlist. */
   ENVIRONMENT?: "development" | "production";
+  /** Fraction [0,1] of successful polling requests sent to structured logs; errors are always logged. */
+  SYNC_POLLING_METRICS_SAMPLE_RATE?: string;
 };

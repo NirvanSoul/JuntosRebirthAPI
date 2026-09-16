@@ -62,16 +62,15 @@ export function createAccountRoute(deps: Dependencies = defaults) {
   route.get("/me", async (c) => {
     try {
       const db = deps.createDb(c.env.DATABASE_URL);
-      const currentUser = await deps.findCurrentUser(db, c.get("currentUserId"));
-      if (!currentUser) return errorResponse(c, "UNAUTHORIZED");
-      const state = await deps.getAccountState(db, currentUser.id);
+      const account = await deps.findCurrentAccount(db, c.get("currentUserId"));
+      if (!account) return errorResponse(c, "UNAUTHORIZED");
       return c.json({
         data: {
-          user: currentUser,
-          profile: state.profile,
-          personalSpaceId: state.personalSpaceId,
-          activeFinancialContext: state.activeFinancialContext,
-          bootstrapRequired: !state.profile || !state.personalSpaceId,
+          user: account.user,
+          profile: account.profile,
+          personalSpaceId: account.personalSpaceId,
+          activeFinancialContext: account.activeFinancialContext,
+          bootstrapRequired: !account.profile || !account.personalSpaceId,
         },
       });
     } catch (error) {
@@ -257,7 +256,7 @@ async function parseProfile(request: Request) {
   if (body.displayName !== undefined) {
     if (typeof body.displayName !== "string") return null;
     const displayName = body.displayName.trim();
-    if (!displayName || displayName.length > 80) return null;
+    if (!displayName || displayName.length > 60) return null;
     input.displayName = displayName;
   }
   if (body.locale !== undefined) {
