@@ -159,6 +159,38 @@ describe("Spaces routes", () => {
       },
     });
   });
+
+  it("POST /v1/spaces maps the membership guard to COUPLE_SPACE_LIMIT", async () => {
+    const response = await createTestApp({
+      userId: "user-1",
+      onCreate: () => {
+        throw Object.assign(new Error("COUPLE_SPACE_LIMIT"), {
+          code: "23514",
+          constraint: "space_members_one_active_couple_per_user",
+        });
+      },
+    }).request(
+      "/v1/spaces",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          name: "Juntos",
+          type: "couple",
+          currency: "EUR",
+          timezone: "Europe/Madrid",
+        }),
+      },
+      bindings,
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "COUPLE_SPACE_LIMIT",
+        message: "You already have an active shared space.",
+      },
+    });
+  });
 });
 
 describe("Space timezones", () => {

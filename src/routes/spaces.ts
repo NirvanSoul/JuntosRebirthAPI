@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { errorResponse } from "../lib/http";
-import { isUniqueViolation } from "../lib/pg";
+import { isCheckViolation, isUniqueViolation } from "../lib/pg";
 import { boundedString, parseBody } from "../lib/validation";
 import { normalizeCurrency } from "../lib/currency";
 import { normalizeTimeZone } from "../lib/timezone";
@@ -69,9 +69,12 @@ export function createSpacesRoute(
 
       return c.json({ data: { space } }, 201);
     } catch (error) {
-      // Solo se admite un espacio de pareja activo por persona; el índice
-      // parcial es quien lo garantiza, así que aquí se traduce su choque.
+      // El índice cubre al creador y la guarda de membresía cubre también a
+      // quien entró como invitado. Ambos choques son el mismo error de dominio.
       if (isUniqueViolation(error, "spaces_one_active_couple_per_creator_idx")) {
+        return errorResponse(c, "COUPLE_SPACE_LIMIT");
+      }
+      if (isCheckViolation(error, "space_members_one_active_couple_per_user")) {
         return errorResponse(c, "COUPLE_SPACE_LIMIT");
       }
       return errorResponse(c, "INTERNAL_SERVER_ERROR");

@@ -10,6 +10,28 @@ export async function createInvitation(db: Database, input: { spaceId: string; i
   const token = encodeToken();
   const tokenHash = await hashToken(token);
   const [knownUser] = await db.select({ id: user.id }).from(user).where(eq(user.email, input.email)).limit(1);
+  if (knownUser) {
+    const conflict = await db.execute<{ already_in_couple: boolean }>(sql`
+      SELECT EXISTS (
+        SELECT 1
+        FROM spaces target_space
+        JOIN space_members existing_membership
+          ON existing_membership.user_id = ${knownUser.id}
+         AND existing_membership.status = 'active'
+        JOIN spaces existing_space
+          ON existing_space.id = existing_membership.space_id
+        WHERE target_space.id = ${input.spaceId}
+          AND target_space.type = 'couple'
+          AND target_space.archived_at IS NULL
+          AND existing_space.type = 'couple'
+          AND existing_space.archived_at IS NULL
+      ) AS already_in_couple
+    `);
+    const row = (conflict.rows ?? conflict)[0] as
+      | { already_in_couple: boolean }
+      | undefined;
+    if (row?.already_in_couple) throw new Error("COUPLE_SPACE_LIMIT");
+  }
   // Se puede invitar a alguien que todavía no tiene cuenta: la invitación queda
   // pendiente por correo y `claimEmailInvitations` la vincula cuando esa persona
   // se registre. La fuente de verdad es `space_invitations`, no el usuario.

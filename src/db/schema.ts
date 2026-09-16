@@ -370,7 +370,8 @@ export const spaces = pgTable(
     uniqueIndex("spaces_source_local_idx")
       .on(table.createdBy, table.sourceInstallationId, table.sourceLocalId)
       .where(sql`${table.sourceLocalId} IS NOT NULL`),
-    // Un usuario solo puede tener un espacio de pareja activo a la vez.
+    // Este índice cubre la creación propia. La migración 0031 añade además la
+    // guarda transaccional sobre `space_members`, que incluye a los invitados.
     uniqueIndex("spaces_one_active_couple_per_creator_idx")
       .on(table.createdBy)
       .where(sql`${table.type} = 'couple' AND ${table.archivedAt} IS NULL`),

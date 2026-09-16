@@ -147,6 +147,70 @@ describe("invitations against PostgreSQL", () => {
     );
   });
 
+  it("prevents a couple member from creating a second couple space", async () => {
+    const { partner, space } = await spaceWithPartner("single-couple-member");
+
+    await expect(coupleSpace(partner.userId)).rejects.toMatchObject({
+      code: "23514",
+      constraint: "space_members_one_active_couple_per_user",
+    });
+
+    const coupleSpaces = (await listActiveSpaces(db, partner.userId)).filter(
+      (candidate) => candidate.type === "couple",
+    );
+    expect(coupleSpaces.map((candidate) => candidate.id)).toEqual([space.id]);
+  });
+
+  it("does not create an invitation for an account that already has a couple space", async () => {
+    const { partner } = await spaceWithPartner("single-couple-invitee");
+    const otherOwner = await person("single-couple-other-owner");
+    const otherSpace = await coupleSpace(otherOwner.userId);
+
+    await expect(
+      createInvitation(db, {
+        spaceId: otherSpace.id,
+        invitedBy: otherOwner.userId,
+        email: partner.email,
+        role: "member",
+      }),
+    ).rejects.toThrow("COUPLE_SPACE_LIMIT");
+
+    expect(await listInvitations(db, otherSpace.id)).toHaveLength(0);
+  });
+
+  it("serializes concurrent acceptances so only one couple membership wins", async () => {
+    const firstOwner = await person("concurrent-couple-owner-a");
+    const secondOwner = await person("concurrent-couple-owner-b");
+    const partner = await person("concurrent-couple-partner");
+    const firstSpace = await coupleSpace(firstOwner.userId);
+    const secondSpace = await coupleSpace(secondOwner.userId);
+    const firstInvitation = await createInvitation(db, {
+      spaceId: firstSpace.id,
+      invitedBy: firstOwner.userId,
+      email: partner.email,
+      role: "member",
+    });
+    const secondInvitation = await createInvitation(db, {
+      spaceId: secondSpace.id,
+      invitedBy: secondOwner.userId,
+      email: partner.email,
+      role: "member",
+    });
+
+    const results = await Promise.allSettled([
+      acceptInvitation(db, partner.userId, firstInvitation.token),
+      acceptInvitation(db, partner.userId, secondInvitation.token),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect(
+      (await listActiveSpaces(db, partner.userId)).filter(
+        (candidate) => candidate.type === "couple",
+      ),
+    ).toHaveLength(1);
+  });
+
   it("keeps an invitation to an email without an account pending, and links it on bootstrap", async () => {
     const owner = await person("inv-future");
     const space = await coupleSpace(owner.userId);

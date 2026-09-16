@@ -42,6 +42,10 @@ al plan maestro; registra decisiones y entregables verificables.
   también las siembra: sin categorías un espacio no admite ni un movimiento.
 - Un espacio `couple` nace con `activated_at = NULL` y solo se activa al aceptar
   la invitación. El cliente deriva de ahí su estado "esperando pareja".
+- Una cuenta solo puede tener una membresía activa en un espacio `couple`, tanto
+  si lo creó como si entró por invitación. La guarda de PostgreSQL serializa por
+  usuario las creaciones, reactivaciones y aceptaciones concurrentes; el índice
+  histórico por `spaces.created_by` queda como defensa adicional del creador.
 - Las recurrencias personalizadas del cliente son N movimientos que comparten
   `recurrence_group_id`, sin serie. El ledger remoto las conserva tal cual.
 - La identidad de sincronización es `(space_id, source_installation_id,
@@ -303,4 +307,3 @@ el voto anterior en vez del recién escrito. Los tres están corregidos y cubier
 
 - **Migración 0027 (`0027_server_updated_at.sql`)**: Columna `server_updated_at` (con triggers `touch_server_updated_at` e índices) en `spaces`, `categories`, `money_accounts`, `recurring_transaction_series` y `transactions`.
 - **Ruta `GET /v1/sync/changes?since=<ISO>`**: Lee los cambios en colecciones secundarias ocurridos tras el timestamp (con solapamiento de seguridad de 60s). Devuelve `spaces` siempre completo para evaluar consistencia de catálogo/contexto y `serverTime` de base de datos para avanzar el cursor local.
-

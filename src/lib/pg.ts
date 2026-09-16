@@ -10,3 +10,13 @@ export function isUniqueViolation(error: unknown, constraint?: string): boolean 
   if (candidate.constraint === constraint) return true;
   return typeof candidate.message === "string" && candidate.message.includes(constraint);
 }
+
+/** Detecta una guarda `CHECK` o trigger de dominio identificada por constraint. */
+export function isCheckViolation(error: unknown, constraint?: string): boolean {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as { code?: unknown; constraint?: unknown; message?: unknown };
+  if (candidate.code !== "23514") return false;
+  if (!constraint) return true;
+  if (candidate.constraint === constraint) return true;
+  return typeof candidate.message === "string" && candidate.message.includes(constraint);
+}

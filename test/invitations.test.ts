@@ -217,3 +217,61 @@ describe("Invitation cancellation & rejection routes", () => {
     );
   });
 });
+
+describe("Couple space limit routes", () => {
+  const invitationId = "70bb35c5-659b-4a33-8353-2b6dd79f35b5";
+  const membershipConflict = Object.assign(new Error("COUPLE_SPACE_LIMIT"), {
+    code: "23514",
+    constraint: "space_members_one_active_couple_per_user",
+  });
+
+  it("returns 409 when the invited account already belongs to a couple space", async () => {
+    const { app, mockDeps } = createTestApp({ userId: "user-1" });
+    mockDeps.createInvitation.mockRejectedValueOnce(
+      new Error("COUPLE_SPACE_LIMIT"),
+    );
+
+    const response = await app.request(
+      "http://localhost/v1/spaces/space-1/invitations",
+      {
+        method: "POST",
+        body: JSON.stringify({ email: "partner@example.com", role: "member" }),
+      },
+      bindings,
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "COUPLE_SPACE_LIMIT" },
+    });
+    expect(mockDeps.sendSpaceInvitation).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["token", "/v1/invitations/accept"],
+    ["linked", `/v1/invitations/${invitationId}/accept`],
+  ])("returns 409 when %s acceptance would create a second couple membership", async (kind, path) => {
+    const { app, mockDeps } = createTestApp({ userId: "user-1" });
+    if (kind === "token") {
+      mockDeps.acceptInvitation.mockRejectedValueOnce(membershipConflict);
+    } else {
+      mockDeps.acceptLinkedInvitation.mockRejectedValueOnce(membershipConflict);
+    }
+
+    const response = await app.request(
+      `http://localhost${path}`,
+      {
+        method: "POST",
+        body: JSON.stringify(
+          kind === "token" ? { token: "a".repeat(64) } : {},
+        ),
+      },
+      bindings,
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "COUPLE_SPACE_LIMIT" },
+    });
+  });
+});

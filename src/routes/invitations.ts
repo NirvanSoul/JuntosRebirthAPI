@@ -1,7 +1,7 @@
 import { Hono, type MiddlewareHandler } from "hono";
 import { createDb } from "../db/client";
 import { errorResponse } from "../lib/http";
-import { isUniqueViolation } from "../lib/pg";
+import { isCheckViolation, isUniqueViolation } from "../lib/pg";
 import { parseBody } from "../lib/validation";
 import type { AuthVariables } from "../middleware/auth";
 import { requireActiveSpaceMember, type SpaceAccessVariables } from "../middleware/space-access";
@@ -18,7 +18,7 @@ const defaults: Deps = { createDb, sendSpaceInvitation, listTokensForUser, sendP
 export function createInvitationsRoute(deps: Deps = defaults, access: MiddlewareHandler<Env> = requireActiveSpaceMember) {
   const route = new Hono<Env>(); route.use("*", access);
   route.get("/", async c => { if (!deps.mayManageMembers(c.get("activeSpaceMembership").role)) return errorResponse(c, "FORBIDDEN", "Insufficient role."); try { return c.json({ data: { invitations: await deps.listInvitations(deps.createDb(c.env.DATABASE_URL), c.req.param("spaceId")!) } }); } catch { return errorResponse(c, "INTERNAL_SERVER_ERROR"); } });
-  route.post("/", async c => { if (!deps.mayManageMembers(c.get("activeSpaceMembership").role)) return errorResponse(c, "FORBIDDEN", "Insufficient role."); const input = await invitationInput(c.req.raw); if (!input) return errorResponse(c, "INVALID_REQUEST"); try { const created = await deps.createInvitation(deps.createDb(c.env.DATABASE_URL), { ...input, spaceId: c.req.param("spaceId")!, invitedBy: c.get("currentUserId") }); const mail = await deps.sendSpaceInvitation({ apiKey: c.env.RESEND_API_KEY, from: c.env.RESEND_FROM, appUrl: c.env.APP_URL }, { to: input.email, token: created.token, spaceName: created.spaceName ?? undefined }); notifyInvitee(c, deps, created); return c.json({ data: { invitation: created.invitation, email: mail } }, 201); } catch (error) { const reason = error instanceof Error ? error.message : ""; if (reason === "INVITATION_ALREADY_PENDING" || isUniqueViolation(error, "space_invitations_one_pending_per_email_idx")) return errorResponse(c, "INVITATION_ALREADY_PENDING"); console.error("Invitation creation failed:", reason); return errorResponse(c, "INTERNAL_SERVER_ERROR"); } });
+  route.post("/", async c => { if (!deps.mayManageMembers(c.get("activeSpaceMembership").role)) return errorResponse(c, "FORBIDDEN", "Insufficient role."); const input = await invitationInput(c.req.raw); if (!input) return errorResponse(c, "INVALID_REQUEST"); try { const created = await deps.createInvitation(deps.createDb(c.env.DATABASE_URL), { ...input, spaceId: c.req.param("spaceId")!, invitedBy: c.get("currentUserId") }); const mail = await deps.sendSpaceInvitation({ apiKey: c.env.RESEND_API_KEY, from: c.env.RESEND_FROM, appUrl: c.env.APP_URL }, { to: input.email, token: created.token, spaceName: created.spaceName ?? undefined }); notifyInvitee(c, deps, created); return c.json({ data: { invitation: created.invitation, email: mail } }, 201); } catch (error) { const reason = error instanceof Error ? error.message : ""; if (reason === "INVITATION_ALREADY_PENDING" || isUniqueViolation(error, "space_invitations_one_pending_per_email_idx")) return errorResponse(c, "INVITATION_ALREADY_PENDING"); if (reason === "COUPLE_SPACE_LIMIT") return errorResponse(c, "COUPLE_SPACE_LIMIT"); console.error("Invitation creation failed:", reason); return errorResponse(c, "INTERNAL_SERVER_ERROR"); } });
   route.post("/:invitationId/revoke", async c => { if (!deps.mayManageMembers(c.get("activeSpaceMembership").role)) return errorResponse(c, "FORBIDDEN", "Insufficient role."); try { const revoked = await deps.revokeInvitation(deps.createDb(c.env.DATABASE_URL), c.req.param("spaceId")!, c.req.param("invitationId")!); return revoked ? c.json({ data: { revoked: true, cancelled: true } }) : errorResponse(c, "INVITATION_NOT_FOUND"); } catch { return errorResponse(c, "INTERNAL_SERVER_ERROR"); } });
   route.post("/:invitationId/cancel", async c => { if (!deps.mayManageMembers(c.get("activeSpaceMembership").role)) return errorResponse(c, "FORBIDDEN", "Insufficient role."); try { const revoked = await deps.revokeInvitation(deps.createDb(c.env.DATABASE_URL), c.req.param("spaceId")!, c.req.param("invitationId")!); return revoked ? c.json({ data: { revoked: true, cancelled: true } }) : errorResponse(c, "INVITATION_NOT_FOUND"); } catch { return errorResponse(c, "INTERNAL_SERVER_ERROR"); } });
   route.delete("/:invitationId", async c => { if (!deps.mayManageMembers(c.get("activeSpaceMembership").role)) return errorResponse(c, "FORBIDDEN", "Insufficient role."); try { const revoked = await deps.revokeInvitation(deps.createDb(c.env.DATABASE_URL), c.req.param("spaceId")!, c.req.param("invitationId")!); return revoked ? c.body(null, 204) : errorResponse(c, "INVITATION_NOT_FOUND"); } catch { return errorResponse(c, "INTERNAL_SERVER_ERROR"); } });
@@ -80,7 +80,10 @@ export function createInvitationAcceptanceRoute(deps: Deps = defaults) {
       return await deps.invitationCountryMatches(db, c.get("currentUserId"), undefined, body.token)
         ? errorResponse(c, "INVITATION_NOT_FOUND")
         : errorResponse(c, "SPACE_COUNTRY_MISMATCH");
-    } catch {
+    } catch (error) {
+      if (isCheckViolation(error, "space_members_one_active_couple_per_user")) {
+        return errorResponse(c, "COUPLE_SPACE_LIMIT");
+      }
       return errorResponse(c, "INTERNAL_SERVER_ERROR");
     }
   });
@@ -112,7 +115,10 @@ export function createInvitationAcceptanceRoute(deps: Deps = defaults) {
       return await deps.invitationCountryMatches(db, c.get("currentUserId"), c.req.param("invitationId")!)
         ? errorResponse(c, "INVITATION_NOT_FOUND")
         : errorResponse(c, "SPACE_COUNTRY_MISMATCH");
-    } catch {
+    } catch (error) {
+      if (isCheckViolation(error, "space_members_one_active_couple_per_user")) {
+        return errorResponse(c, "COUPLE_SPACE_LIMIT");
+      }
       return errorResponse(c, "INTERNAL_SERVER_ERROR");
     }
   });
