@@ -40,6 +40,16 @@ describe("custom exchange rates routes", () => {
     expect(deps.createCustomExchangeRate).toHaveBeenCalledWith(expect.anything(), { userId: "user-1", countryCode: "VE", name: "Mi tasa", rate: "54.50", isDefault: false });
   });
 
+  it("returns 400 instead of a generic 500 for an invalid stored rate", async () => {
+    const { testApp } = setup({
+      createCustomExchangeRate: vi.fn().mockRejectedValue({ cause: { code: "23514" } }),
+    });
+    const response = await testApp.request("/v1/exchange/custom-rates", { method: "POST", body: JSON.stringify({ name: "Mi tasa", rate: "54.50" }) }, bindings);
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "INVALID_REQUEST" } });
+  });
+
   it.each(["0", "-1", "abc", ""])("rejects a non-positive rate %j", async (value) => {
     const { testApp } = setup();
     const response = await testApp.request("/v1/exchange/custom-rates", { method: "POST", body: JSON.stringify({ name: "Mi tasa", rate: value }) }, bindings);

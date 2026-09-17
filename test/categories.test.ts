@@ -102,6 +102,20 @@ describe("Categories routes", () => {
     );
   });
 
+  it("returns 400 instead of a generic 500 for a category integrity failure", async () => {
+    const { testApp } = createTestApp({
+      createCategory: vi.fn().mockRejectedValue({ cause: { code: "23503" } }),
+    });
+    const response = await testApp.request(
+      "/v1/spaces/space-1/categories",
+      { method: "POST", body: JSON.stringify({ name: "Comida" }) },
+      bindings,
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "INVALID_REQUEST" } });
+  });
+
   it("POST rejects attempts to set server-controlled category fields", async () => {
     const { testApp } = createTestApp();
     const response = await testApp.request(

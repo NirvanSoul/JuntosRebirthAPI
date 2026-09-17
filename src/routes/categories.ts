@@ -1,6 +1,7 @@
 import { Hono, type MiddlewareHandler } from "hono";
 import { normalizeCurrency } from "../lib/currency";
 import { errorResponse } from "../lib/http";
+import { databaseErrorResponse } from "../lib/database-errors";
 import { parseBody } from "../lib/validation";
 import { parseMinorAmount } from "../lib/money";
 import type { AuthVariables } from "../middleware/auth";
@@ -65,8 +66,8 @@ export function createCategoriesRoute(
       );
 
       return c.json({ data: { categories } });
-    } catch {
-      return errorResponse(c, "INTERNAL_SERVER_ERROR", "Internal error.");
+    } catch (error) {
+      return databaseErrorResponse(c, error);
     }
   });
 
@@ -85,8 +86,8 @@ export function createCategoriesRoute(
       );
 
       return c.json({ data: { category } }, 201);
-    } catch {
-      return errorResponse(c, "INTERNAL_SERVER_ERROR", "Internal error.");
+    } catch (error) {
+      return databaseErrorResponse(c, error);
     }
   });
 
@@ -116,8 +117,8 @@ export function createCategoriesRoute(
         category.id,
       );
       return c.json({ data: { category: { ...category, budgets } } });
-    } catch {
-      return errorResponse(c, "INTERNAL_SERVER_ERROR", "Internal error.");
+    } catch (error) {
+      return databaseErrorResponse(c, error);
     }
   });
 
@@ -147,8 +148,8 @@ export function createCategoriesRoute(
       });
 
       return c.json({ data: { budget } });
-    } catch {
-      return errorResponse(c, "INTERNAL_SERVER_ERROR", "Internal error.");
+    } catch (error) {
+      return databaseErrorResponse(c, error);
     }
   });
 
@@ -169,8 +170,8 @@ export function createCategoriesRoute(
 
       await dependencies.deleteCategoryBudget(db, category.id, currency);
       return c.body(null, 204);
-    } catch {
-      return errorResponse(c, "INTERNAL_SERVER_ERROR", "Internal error.");
+    } catch (error) {
+      return databaseErrorResponse(c, error);
     }
   });
 

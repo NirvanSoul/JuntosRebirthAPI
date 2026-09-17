@@ -44,6 +44,12 @@ describe("Transactions routes", () => {
     const { testApp, deps } = setup(); const response = await testApp.request("/v1/spaces/space-1/transactions", { method: "POST", body: JSON.stringify(body) }, bindings);
     expect(response.status).toBe(201); expect(deps.createTransaction).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ userId: "user-1", spaceId: "space-1", currency: "EUR", title: "Supermercado", amountMinor: 2599n }));
   });
+  it("returns 400 instead of a generic 500 for an integrity failure", async () => {
+    const { testApp } = setup({ createTransaction: vi.fn().mockRejectedValue({ cause: { code: "23503" } }) });
+    const response = await testApp.request("/v1/spaces/space-1/transactions", { method: "POST", body: JSON.stringify(body) }, bindings);
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "INVALID_REQUEST" } });
+  });
   it("rejects an archived or foreign category", async () => {
     const { testApp } = setup({ findActiveCategory: vi.fn().mockResolvedValue(null) }); const response = await testApp.request("/v1/spaces/space-1/transactions", { method: "POST", body: JSON.stringify(body) }, bindings); expect(response.status).toBe(404); await expect(response.json()).resolves.toMatchObject({ error: { code: "CATEGORY_NOT_FOUND" } });
   });

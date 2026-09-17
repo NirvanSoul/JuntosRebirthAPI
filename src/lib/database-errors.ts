@@ -1,5 +1,6 @@
 import type { Context } from "hono";
 import { errorResponse } from "./http";
+import { isDataViolation } from "./pg";
 
 type DatabaseError = {
   code?: unknown;
@@ -65,6 +66,7 @@ export function logDatabaseFailure(operation: string, error: unknown): void {
 }
 
 export function databaseErrorResponse(c: Context, error: unknown): Response {
+  if (isDataViolation(error)) return errorResponse(c, "INVALID_REQUEST");
   if (!isDatabaseSchemaOutdated(error)) return errorResponse(c, "INTERNAL_SERVER_ERROR");
 
   const response = errorResponse(c, "DATABASE_SCHEMA_OUTDATED");

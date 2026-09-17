@@ -41,6 +41,18 @@ describe("database schema errors", () => {
       },
     });
   });
+
+  it("returns INVALID_REQUEST for an integrity failure without leaking PostgreSQL", async () => {
+    const app = new Hono();
+    app.get("/", (c) => databaseErrorResponse(c, { cause: { code: "23503", detail: "private FK detail" } }));
+
+    const response = await app.request("/");
+
+    expect(response.status).toBe(400);
+    const body = await response.text();
+    expect(body).toContain("INVALID_REQUEST");
+    expect(body).not.toContain("private FK detail");
+  });
 });
 
 describe("database payload errors", () => {

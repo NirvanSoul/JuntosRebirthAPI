@@ -1,6 +1,8 @@
 import { Hono } from "hono";
 import { createDb } from "../db/client";
 import { errorResponse, type ErrorCode } from "../lib/http";
+import { databaseErrorResponse, isDatabaseSchemaOutdated } from "../lib/database-errors";
+import { isDataViolation } from "../lib/pg";
 import { boundedString, parseBody } from "../lib/validation";
 import type { AuthVariables } from "../middleware/auth";
 import * as service from "../services/imports";
@@ -20,6 +22,9 @@ const CLIENT_ERRORS: Record<string, ErrorCode> = {
 const CANONICAL_KEY = /^[a-z0-9_]{2,64}$/;
 
 function fail(c: Parameters<typeof errorResponse>[0], error: unknown, context: string) {
+  if (isDatabaseSchemaOutdated(error) || isDataViolation(error)) {
+    return databaseErrorResponse(c, error);
+  }
   const reason = error instanceof Error ? error.message : "";
   const code = CLIENT_ERRORS[reason];
   if (!code) {

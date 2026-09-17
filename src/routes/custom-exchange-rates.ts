@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { createDb } from "../db/client";
 import { isPositiveDecimal } from "../lib/decimal";
 import { errorResponse } from "../lib/http";
+import { databaseErrorResponse } from "../lib/database-errors";
 import { boundedString, parseBody } from "../lib/validation";
 import type { AuthVariables } from "../middleware/auth";
 import {
@@ -39,8 +40,8 @@ export function createCustomExchangeRatesRoute(deps: Deps = defaults) {
     try {
       const rates = await deps.listCustomExchangeRates(deps.createDb(c.env.DATABASE_URL), c.get("currentUserId"));
       return c.json({ data: { rates } });
-    } catch {
-      return errorResponse(c, "INTERNAL_SERVER_ERROR");
+    } catch (error) {
+      return databaseErrorResponse(c, error);
     }
   });
 
@@ -55,8 +56,8 @@ export function createCustomExchangeRatesRoute(deps: Deps = defaults) {
         ...input,
       });
       return c.json({ data: { rate } }, 201);
-    } catch {
-      return errorResponse(c, "INTERNAL_SERVER_ERROR");
+    } catch (error) {
+      return databaseErrorResponse(c, error);
     }
   });
 
@@ -72,8 +73,8 @@ export function createCustomExchangeRatesRoute(deps: Deps = defaults) {
 
       const rate = await deps.updateCustomExchangeRate(db, { userId, id: existing.id, ...input });
       return c.json({ data: { rate } });
-    } catch {
-      return errorResponse(c, "INTERNAL_SERVER_ERROR");
+    } catch (error) {
+      return databaseErrorResponse(c, error);
     }
   });
 
@@ -86,8 +87,8 @@ export function createCustomExchangeRatesRoute(deps: Deps = defaults) {
       );
       if (!deleted) return errorResponse(c, "CUSTOM_RATE_NOT_FOUND");
       return c.body(null, 204);
-    } catch {
-      return errorResponse(c, "INTERNAL_SERVER_ERROR");
+    } catch (error) {
+      return databaseErrorResponse(c, error);
     }
   });
 
