@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { describe, expect, it, vi } from "vitest";
 import { databaseErrorResponse, isDatabaseSchemaOutdated, logDatabaseFailure } from "../src/lib/database-errors";
+import { isDataViolation } from "../src/lib/pg";
 
 describe("database schema errors", () => {
   it.each([
@@ -39,5 +40,18 @@ describe("database schema errors", () => {
         message: "Service is updating. Try again shortly.",
       },
     });
+  });
+});
+
+describe("database payload errors", () => {
+  it.each(["22001", "22003", "22P02", "23502", "23503", "23514"])(
+    "recognizes PostgreSQL %s as an invalid sync payload",
+    (code) => {
+      expect(isDataViolation({ cause: { code } })).toBe(true);
+    },
+  );
+
+  it("does not turn connectivity failures into client errors", () => {
+    expect(isDataViolation({ code: "08006" })).toBe(false);
   });
 });

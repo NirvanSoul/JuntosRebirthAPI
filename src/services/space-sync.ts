@@ -39,10 +39,18 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 type Existing = { id: string; sourceInstallationId: string | null; sourceLocalId: string | null };
 type ExistingCategory = Existing & { templateKey?: string | null };
 type ExistingTransaction = Existing & {
+  categoryId: string;
+  moneyAccountId: string | null;
+  type: string;
   amountMinor: bigint;
   currency: string;
+  title: string;
   occurredOn: string;
+  note: string | null;
+  recurrence: string;
+  recurrenceGroupId: string | null;
   recurrenceSeriesId: string | null;
+  isArchived: boolean;
   accountingAmountMinorUsd: bigint | null;
 };
 
@@ -227,9 +235,6 @@ export async function syncSpaceData(
   if (!space) throw new Error("SPACE_NOT_FOUND");
   if (space.countryCode === "VE") {
     for (const account of payload.moneyAccounts) validateVeSyncedAccount(account);
-    for (const transaction of payload.transactions) {
-      if (transaction.currency !== "USD" && transaction.currency !== "VES") throw new Error("INVALID_PAYLOAD");
-    }
   }
 
   const [
@@ -270,10 +275,18 @@ export async function syncSpaceData(
           id: transactions.id,
           sourceInstallationId: transactions.sourceInstallationId,
           sourceLocalId: transactions.sourceLocalId,
+          categoryId: transactions.categoryId,
+          moneyAccountId: transactions.moneyAccountId,
+          type: transactions.type,
           amountMinor: transactions.amountMinor,
           currency: transactions.currency,
+          title: transactions.title,
           occurredOn: transactions.occurredOn,
+          note: transactions.note,
+          recurrence: transactions.recurrence,
+          recurrenceGroupId: transactions.recurrenceGroupId,
           recurrenceSeriesId: transactions.recurrenceSeriesId,
+          isArchived: transactions.isArchived,
           accountingAmountMinorUsd: transactions.accountingAmountMinorUsd,
         })
         .from(transactions)
@@ -337,6 +350,29 @@ export async function syncSpaceData(
     knownSeries,
     now.toISOString().slice(0, 10),
   );
+  if (space.countryCode === "VE") {
+    const existingTransactionById = new Map(
+      existingTransactions.map((transaction) => [transaction.id, transaction]),
+    );
+    for (const transaction of payload.transactions) {
+      if (transaction.currency === "USD" || transaction.currency === "VES") continue;
+      const id = transactionIds.get(text(transaction.id));
+      const existing = id ? existingTransactionById.get(id) : undefined;
+      // Un cambio de país puede dejar históricos EUR u otra moneda. Permitimos
+      // reenviar exactamente esa fila para que el dispositivo la marque como
+      // sincronizada, pero nunca crear ni mutar una nueva divisa fuera del
+      // libro VE actual.
+      if (!existing || !isUnchangedLegacyVeTransaction(
+        existing,
+        transaction,
+        knownCategories,
+        knownAccounts,
+        knownSeries,
+      )) {
+        throw new Error("INVALID_PAYLOAD");
+      }
+    }
+  }
   const source = (localId: string) => ({
     sourceInstallationId: installationId,
     sourceLocalId: localId,
@@ -360,7 +396,10 @@ export async function syncSpaceData(
           name: text(row.name),
           icon: stringOrNull(row.icon),
           colorToken: stringOrNull(row.colorToken),
-          createdBy: stringOrNull(row.createdBy) ?? userId,
+          // `createdBy` es autoría, no una decisión del dispositivo. En una
+          // inserción pertenece a la sesión autenticada; en updates el
+          // COALESCE de abajo preserva la autoría ya guardada.
+          createdBy: userId,
           isDefault: Boolean(row.isDefault),
           templateKey: stringOrNull(row.templateKey),
           ...source(localId),
@@ -445,7 +484,7 @@ export async function syncSpaceData(
           icon: stringOrNull(row.icon),
           colorToken: stringOrNull(row.colorToken),
           primaryCurrency: text(row.currency),
-          createdBy: stringOrNull(row.createdBy) ?? userId,
+          createdBy: userId,
           ...source(localId),
           isArchived,
           archivedAt: isArchived ? updatedAt : null,
@@ -512,7 +551,7 @@ export async function syncSpaceData(
           spaceId,
           categoryId,
           moneyAccountId: reference(knownAccounts, row.moneyAccountId),
-          createdBy: stringOrNull(row.createdBy) ?? userId,
+          createdBy: userId,
           type: transactionType(row.type),
           amountMinor,
           currency: text(row.currency),
@@ -596,7 +635,7 @@ export async function syncSpaceData(
           spaceId,
           categoryId,
           moneyAccountId: reference(knownAccounts, row.moneyAccountId),
-          createdBy: stringOrNull(row.createdBy) ?? userId,
+          createdBy: userId,
           type: transactionType(row.type),
           amountMinor,
           accountingAmountMinorUsd,
@@ -735,6 +774,27 @@ function validateVeSyncedAccount(row: Row) {
 function existingCustomRateId(rows: { rateSource: string; customRateId: string | null }[] | undefined): string | null | undefined {
   const custom = rows?.find((row) => row.rateSource === "CUSTOM");
   return custom?.customRateId;
+}
+
+function isUnchangedLegacyVeTransaction(
+  existing: ExistingTransaction,
+  row: Row,
+  knownCategories: Map<string, string>,
+  knownAccounts: Map<string, string>,
+  knownSeries: Map<string, string>,
+) {
+  return existing.categoryId === reference(knownCategories, row.categoryId)
+    && existing.moneyAccountId === reference(knownAccounts, row.moneyAccountId)
+    && existing.type === transactionType(row.type)
+    && existing.amountMinor === BigInt(Math.max(1, integer(row.amountMinor)))
+    && existing.currency === text(row.currency)
+    && existing.title === text(row.title)
+    && existing.occurredOn === dateOnly(row.occurredOn, "")
+    && existing.note === stringOrNull(row.note)
+    && existing.recurrence === recurrenceKind(row.recurrence)
+    && existing.recurrenceGroupId === stringOrNull(row.recurrenceGroupId)
+    && existing.recurrenceSeriesId === reference(knownSeries, row.recurrenceSeriesId)
+    && existing.isArchived === Boolean(row.isArchived);
 }
 
 function referenceMap(

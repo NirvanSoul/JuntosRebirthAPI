@@ -13,6 +13,7 @@ type Captured = { table: string; op: "insert" | "delete"; values?: Record<string
  * categorías, cuentas, series, movimientos y alias de categoría ya existentes.
  */
 function fakeDatabase(existing: {
+  countryCode?: string | null;
   categories?: unknown[];
   moneyAccounts?: unknown[];
   series?: unknown[];
@@ -24,7 +25,7 @@ function fakeDatabase(existing: {
   let selectCall = 0;
 
   const reads: unknown[][] = [
-    [{ currency: "EUR" }],
+    [{ currency: "EUR", countryCode: existing.countryCode ?? null }],
     existing.categories ?? [],
     existing.moneyAccounts ?? [],
     existing.series ?? [],
@@ -310,6 +311,78 @@ describe("space bulk sync", () => {
       remoteId: expect.stringMatching(/^[0-9a-f-]{36}$/),
       exchangeSnapshot: null,
     })]);
+  });
+
+  it("accepts an unchanged legacy currency when a space later becomes VE", async () => {
+    const legacyId = "44444444-4444-4444-8444-444444444444";
+    const { db } = fakeDatabase({
+      countryCode: "VE",
+      categories: [{
+        id: "22222222-2222-4222-8222-222222222222",
+        sourceInstallationId: "install-1",
+        sourceLocalId: "category-local",
+      }],
+      transactions: [{
+        id: legacyId,
+        sourceInstallationId: "install-1",
+        sourceLocalId: "legacy-local",
+        amountMinor: 1250n,
+        currency: "EUR",
+        categoryId: "22222222-2222-4222-8222-222222222222",
+        moneyAccountId: null,
+        type: "expense",
+        title: "Histórico",
+        occurredOn: "2026-08-20",
+        note: null,
+        recurrence: "once",
+        recurrenceGroupId: null,
+        recurrenceSeriesId: null,
+        isArchived: false,
+        accountingAmountMinorUsd: null,
+      }],
+    });
+
+    await expect(syncSpaceData(db, SPACE, "user-1", payload({
+      transactions: [{
+        id: "legacy-local",
+        remoteId: legacyId,
+        categoryId: "22222222-2222-4222-8222-222222222222",
+        moneyAccountId: null,
+        type: "expense",
+        amountMinor: 1250,
+        currency: "EUR",
+        title: "Histórico",
+        occurredOn: "2026-08-20",
+        isArchived: false,
+        createdAt: NOW,
+        updatedAt: NOW,
+      }],
+    }))).resolves.toMatchObject({ transactionCount: 1 });
+  });
+
+  it("rejects a mutation of a legacy currency in a VE space", async () => {
+    const legacyId = "44444444-4444-4444-8444-444444444444";
+    const { db, batch } = fakeDatabase({
+      countryCode: "VE",
+      categories: [{ id: "22222222-2222-4222-8222-222222222222", sourceInstallationId: "install-1", sourceLocalId: "category-local" }],
+      transactions: [{
+        id: legacyId, sourceInstallationId: "install-1", sourceLocalId: "legacy-local",
+        categoryId: "22222222-2222-4222-8222-222222222222", moneyAccountId: null,
+        type: "expense", amountMinor: 1250n, currency: "EUR", title: "Histórico",
+        occurredOn: "2026-08-20", note: null, recurrence: "once", recurrenceGroupId: null,
+        recurrenceSeriesId: null, isArchived: false, accountingAmountMinorUsd: null,
+      }],
+    });
+
+    await expect(syncSpaceData(db, SPACE, "user-1", payload({
+      transactions: [{
+        id: "legacy-local", remoteId: legacyId,
+        categoryId: "22222222-2222-4222-8222-222222222222", moneyAccountId: null,
+        type: "expense", amountMinor: 1300, currency: "EUR", title: "Histórico",
+        occurredOn: "2026-08-20", isArchived: false, createdAt: NOW, updatedAt: NOW,
+      }],
+    }))).rejects.toThrow("INVALID_PAYLOAD");
+    expect(batch).not.toHaveBeenCalled();
   });
 
   it("rejects client-supplied snapshot values before writing the batch", async () => {
@@ -619,7 +692,7 @@ describe("space bulk sync", () => {
     });
   });
 
-  it("preserves row.createdBy across categories, money accounts, series, and transactions", async () => {
+  it("uses the authenticated user as author instead of trusting client-supplied createdBy", async () => {
     const { db, captured } = fakeDatabase();
 
     await syncSpaceData(
@@ -681,10 +754,10 @@ describe("space bulk sync", () => {
       }),
     );
 
-    expect(rowsFor(captured, "categories")[0]?.values?.createdBy).toBe("author-user-cat");
-    expect(rowsFor(captured, "money_accounts")[0]?.values?.createdBy).toBe("author-user-acc");
-    expect(rowsFor(captured, "recurring_transaction_series")[0]?.values?.createdBy).toBe("author-user-ser");
-    expect(rowsFor(captured, "transactions")[0]?.values?.createdBy).toBe("author-user-tx");
+    expect(rowsFor(captured, "categories")[0]?.values?.createdBy).toBe("syncing-user");
+    expect(rowsFor(captured, "money_accounts")[0]?.values?.createdBy).toBe("syncing-user");
+    expect(rowsFor(captured, "recurring_transaction_series")[0]?.values?.createdBy).toBe("syncing-user");
+    expect(rowsFor(captured, "transactions")[0]?.values?.createdBy).toBe("syncing-user");
   });
 
   it("falls back to the syncing userId when row.createdBy is absent", async () => {

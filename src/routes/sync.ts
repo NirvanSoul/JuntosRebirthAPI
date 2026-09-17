@@ -2,6 +2,7 @@ import { Hono, type MiddlewareHandler } from "hono";
 import { createDb } from "../db/client";
 import { errorResponse, type ErrorCode } from "../lib/http";
 import { databaseErrorResponse, isDatabaseSchemaOutdated, logDatabaseFailure } from "../lib/database-errors";
+import { isDataViolation } from "../lib/pg";
 import { parseBody } from "../lib/validation";
 import type { AuthVariables } from "../middleware/auth";
 import {
@@ -135,6 +136,9 @@ export function createSpaceSyncRoute(
       const code = CLIENT_ERRORS[reason];
       if (isDatabaseSchemaOutdated(error)) {
         return databaseErrorResponse(c, error);
+      }
+      if (isDataViolation(error)) {
+        return errorResponse(c, "INVALID_REQUEST");
       }
       if (!code) {
         return errorResponse(c, "INTERNAL_SERVER_ERROR");
