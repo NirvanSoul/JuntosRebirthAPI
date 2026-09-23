@@ -25,7 +25,11 @@ describe("bootstrap schema regression against PostgreSQL", () => {
     await updateProfile(db, userId, { countryCode: "VE" });
     const active = await bootstrapAccount(db, currentUser, "Europe/Madrid");
     const spaceId = active.personalSpace.id;
-    const [category] = await db.select().from(categories).where(eq(categories.spaceId, spaceId));
+    const [category] = await db.insert(categories).values({
+      spaceId,
+      name: "Elegida en onboarding",
+      createdBy: userId,
+    }).returning();
     const [movement] = await db.insert(transactions).values({
       spaceId, categoryId: category.id, createdBy: userId, type: "expense",
       currency: "USD", amountMinor: 1234n, title: "Restored test movement", occurredOn: "2026-09-09",
@@ -81,7 +85,7 @@ describe("bootstrap schema regression against PostgreSQL", () => {
     const snapshot = await buildSnapshot(db, userId);
     expect(snapshot.activeFinancialContextId).toBe(first.activeFinancialContext!.id);
     expect(snapshot.spaces).toHaveLength(1);
-    expect(snapshot.categories).toHaveLength(18);
+    expect(snapshot.categories).toHaveLength(0);
 
     // Un perfil antiguo puede tener espacio y contexto, pero aún no el puntero activo.
     await db.update(userProfiles).set({ activeFinancialContextId: null }).where(eq(userProfiles.userId, userId));

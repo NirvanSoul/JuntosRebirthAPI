@@ -1,5 +1,4 @@
 import { and, eq, sql } from "drizzle-orm";
-import { defaultCategories } from "../constants/default-categories";
 import type { Database } from "../db/client";
 import { financialContexts, spaceMembers, spaces, user, userProfiles } from "../db/schema";
 import { normalizeCountryCode } from "../lib/country";
@@ -128,13 +127,6 @@ export async function bootstrapAccount(
 
   const spaceId = crypto.randomUUID();
   const contextId = crypto.randomUUID();
-  const categoryValues = sql.join(
-    defaultCategories.map(
-      (category) =>
-        sql`(${category.key}, ${category.name}, ${category.icon}, ${category.colorToken})`,
-    ),
-    sql`, `,
-  );
 
   const result = await db.execute(sql`
     WITH claimed_profile AS (
@@ -173,14 +165,6 @@ export async function bootstrapAccount(
       WHERE user_id=${currentUser.id} AND personal_space_id IS NOT NULL
         AND active_financial_context_id IS NULL
       RETURNING active_financial_context_id
-    ), initial_categories AS (
-      INSERT INTO categories (space_id, name, icon, color_token, created_by, is_default, template_key, created_at, updated_at)
-      SELECT new_space.id, definition.name, definition.icon, definition.color_token,
-        ${currentUser.id}, true, definition.template_key, now(), now()
-      FROM new_space
-      CROSS JOIN (VALUES ${categoryValues}) AS definition(template_key, name, icon, color_token)
-      ON CONFLICT (space_id, template_key) WHERE template_key IS NOT NULL DO NOTHING
-      RETURNING id
     )
     SELECT EXISTS (SELECT 1 FROM new_space) AS personal_space_created
   `);
@@ -261,12 +245,6 @@ export async function updateProfile(
     );
     const spaceId = crypto.randomUUID();
     const contextId = crypto.randomUUID();
-    const categoryValues = sql.join(
-      defaultCategories.map(
-        (category) => sql`(${category.key}, ${category.name}, ${category.icon}, ${category.colorToken})`,
-      ),
-      sql`, `,
-    );
     const result = await db.execute(sql`
       WITH existing_context AS (
         SELECT id, personal_space_id, canonical_currency
@@ -287,12 +265,6 @@ export async function updateProfile(
         INSERT INTO financial_contexts (id, user_id, country_code, canonical_currency, personal_space_id, created_at, updated_at)
         SELECT ${contextId}, ${userId}, ${countryCode}, ${canonicalCurrency}, id, now(), now() FROM new_space
         RETURNING id, personal_space_id, canonical_currency
-      ), initial_categories AS (
-        INSERT INTO categories (space_id, name, icon, color_token, created_by, is_default, template_key, created_at, updated_at)
-        SELECT new_space.id, definition.name, definition.icon, definition.color_token, ${userId}, true, definition.template_key, now(), now()
-        FROM new_space
-        CROSS JOIN (VALUES ${categoryValues}) AS definition(template_key, name, icon, color_token)
-        ON CONFLICT (space_id, template_key) WHERE template_key IS NOT NULL DO NOTHING
       ), activated_context AS (
         SELECT id, personal_space_id, canonical_currency FROM existing_context
         UNION ALL

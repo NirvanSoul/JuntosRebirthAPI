@@ -38,8 +38,10 @@ al plan maestro; registra decisiones y entregables verificables.
   no mediante `spaces.created_by` y `type`.
 - La creación y el *claim* del espacio se hacen con un CTE atómico de PostgreSQL,
   porque el driver Neon HTTP no ofrece transacciones interactivas.
-- Las categorías iniciales canónicas las posee el backend. `POST /v1/spaces`
-  también las siembra: sin categorías un espacio no admite ni un movimiento.
+- Las categorías iniciales las elige la persona en el onboarding y las empuja el
+  cliente: ni `bootstrapAccount`, ni `updateProfile`, ni `POST /v1/spaces`
+  siembran ninguna. Un espacio nace vacío y el backend ya no guarda una segunda
+  copia de la plantilla; `sync` reconcilia las que llegan por `template_key`.
 - Un espacio `couple` nace con `activated_at = NULL` y solo se activa al aceptar
   la invitación. El cliente deriva de ahí su estado "esperando pareja".
 - Una cuenta solo puede tener una membresía activa en un espacio `couple`, tanto

@@ -12,7 +12,7 @@ const db = testDb();
 afterAll(cleanupTestUsers);
 
 describe("bootstrap against PostgreSQL", () => {
-  it("creates profile, personal space and the seeded categories exactly once", async () => {
+  it("creates profile and personal space without assigning categories", async () => {
     const userId = await createTestUser(db, "bootstrap");
     const currentUser = await findCurrentUser(db, userId);
     expect(currentUser).not.toBeNull();
@@ -21,13 +21,13 @@ describe("bootstrap against PostgreSQL", () => {
     expect(first.created).toEqual({ profile: true, personalSpace: true });
     expect(first.personalSpace.timezone).toBe("Europe/Madrid");
 
-    const seeded = await db
+    const initialCategories = await db
       .select({ id: categories.id })
       .from(categories)
       .where(eq(categories.spaceId, first.personalSpace.id));
-    expect(seeded).toHaveLength(18);
+    expect(initialCategories).toHaveLength(0);
 
-    // El CTE es idempotente: repetirlo no duplica espacio ni categorías.
+    // Repetir bootstrap no duplica el espacio ni asigna las plantillas.
     const second = await bootstrapAccount(db, currentUser!, "Europe/Madrid");
     expect(second.created).toEqual({ profile: false, personalSpace: false });
     expect(second.personalSpace.id).toBe(first.personalSpace.id);
@@ -36,7 +36,7 @@ describe("bootstrap against PostgreSQL", () => {
       .select({ id: categories.id })
       .from(categories)
       .where(eq(categories.spaceId, first.personalSpace.id));
-    expect(afterReplay).toHaveLength(18);
+    expect(afterReplay).toHaveLength(0);
   });
 });
 

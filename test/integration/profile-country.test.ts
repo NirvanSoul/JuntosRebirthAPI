@@ -35,7 +35,11 @@ describe("profile country persistence against PostgreSQL", () => {
     const f = await fixture();
     await f.patch({ countryCode: "ES" });
     const spanish = await account.getAccountState(db, f.id);
-    const [category] = await db.select().from(categories).where(eq(categories.spaceId, spanish.personalSpaceId!));
+    const [category] = await db.insert(categories).values({
+      spaceId: spanish.personalSpaceId!,
+      name: "Elegida en onboarding",
+      createdBy: f.id,
+    }).returning();
     const [movement] = await db.insert(transactions).values({
       spaceId: spanish.personalSpaceId!, categoryId: category.id, createdBy: f.id,
       type: "expense", currency: "EUR", amountMinor: 1234n, title: "Preserved", occurredOn: "2026-09-11",
@@ -50,6 +54,7 @@ describe("profile country persistence against PostgreSQL", () => {
     } });
     const venezuelan = await account.getAccountState(db, f.id);
     expect(venezuelan.personalSpaceId).not.toBe(spanish.personalSpaceId);
+    expect(await db.select().from(categories).where(eq(categories.spaceId, venezuelan.personalSpaceId!))).toHaveLength(0);
     expect((await db.select().from(userProfiles).where(eq(userProfiles.userId, f.id)))[0].countryCode).toBe("VE");
     expect((await db.select().from(spaces).where(eq(spaces.id, venezuelan.personalSpaceId!)))[0]).toMatchObject({ countryCode: "VE", currency: "USD" });
 
