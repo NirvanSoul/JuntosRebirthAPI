@@ -89,23 +89,41 @@ function transactionRow(overrides: Record<string, unknown> = {}) {
 }
 
 describe("space bulk sync against PostgreSQL", () => {
-  it("does not let offline sync bypass Venezuela's single-USD-account rule", async () => {
+  it("trims a Venezuela account to its USD balance instead of rejecting the batch", async () => {
     const { userId, spaceId } = await sharedSpace("sync-ve-account", "VE");
 
+    // Un dispositivo que registró un cambio de divisa abre un monedero VES de
+    // más. El lote entra igual y el espacio conserva su único saldo USD.
     await expect(syncSpaceData(db, spaceId, userId, {
       installationId: "install-ve",
-      categories: [], recurringSeries: [], transactions: [],
-      moneyAccounts: [accountRow()],
-    })).rejects.toThrow("VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED");
+      categories: [categoryRow()], recurringSeries: [], transactions: [],
+      moneyAccounts: [accountRow({
+        currency: "USD",
+        balances: [
+          { currency: "USD", openingBalanceMinor: 100000, position: 0 },
+          { currency: "VES", openingBalanceMinor: 0, position: 1 },
+        ],
+      })],
+    })).resolves.toMatchObject({ categoryCount: 1, moneyAccountCount: 1 });
 
+    const snapshot = await buildSnapshot(db, userId);
+    const account = snapshot.moneyAccounts.find((item) => item.spaceId === spaceId);
+    expect(account?.primaryCurrency).toBe("USD");
+    expect(account?.balances).toEqual([
+      expect.objectContaining({ currency: "USD", openingBalanceMinor: "100000" }),
+    ]);
+
+    // Sin ancla en USD no hay cuenta que representar: eso sigue siendo un 409.
     await expect(syncSpaceData(db, spaceId, userId, {
       installationId: "install-ve",
       categories: [], recurringSeries: [], transactions: [],
       moneyAccounts: [accountRow({
-        currency: "USD",
-        balances: [{ currency: "USD", openingBalanceMinor: 100000, position: 0 }],
+        id: "local-acc-2",
+        remoteId: "local-acc-2",
+        currency: "VES",
+        balances: [{ currency: "VES", openingBalanceMinor: 100000, position: 0 }],
       })],
-    })).resolves.toMatchObject({ moneyAccountCount: 1 });
+    })).rejects.toThrow("VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED");
   });
 
   it("is idempotent: pushing the same batch twice creates one row each", async () => {

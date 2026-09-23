@@ -233,9 +233,9 @@ export async function syncSpaceData(
     .where(eq(spaces.id, spaceId))
     .limit(1);
   if (!space) throw new Error("SPACE_NOT_FOUND");
-  if (space.countryCode === "VE") {
-    for (const account of payload.moneyAccounts) validateVeSyncedAccount(account);
-  }
+  const moneyAccountRows = space.countryCode === "VE"
+    ? payload.moneyAccounts.map(normalizeVeSyncedAccount)
+    : payload.moneyAccounts;
 
   const [
     existingCategories,
@@ -310,7 +310,7 @@ export async function syncSpaceData(
     ]);
 
   const categoryIds = resolveCategoryIds(existingCategories, payload.categories, installationId);
-  const accountIds = resolveIds(existingAccounts, payload.moneyAccounts, installationId);
+  const accountIds = resolveIds(existingAccounts, moneyAccountRows, installationId);
   const seriesIds = resolveIds(existingSeries, payload.recurringSeries, installationId);
 
   // La selección de CUSTOM no vive en `transactions`: solo existe en la fila
@@ -467,7 +467,7 @@ export async function syncSpaceData(
     );
   }
 
-  for (const row of payload.moneyAccounts) {
+  for (const row of moneyAccountRows) {
     const localId = text(row.id);
     const id = accountIds.get(localId)!;
     const updatedAt = date(row.updatedAt, now);
@@ -733,7 +733,7 @@ export async function syncSpaceData(
 
   return {
     categoryCount: payload.categories.length,
-    moneyAccountCount: payload.moneyAccounts.length,
+    moneyAccountCount: moneyAccountRows.length,
     recurringSeriesCount: payload.recurringSeries.length,
     transactionCount: payload.transactions.length,
     ...(syncedTransactions.length ? { transactions: syncedTransactions } : {}),
@@ -761,14 +761,24 @@ function validateSyncedTransaction(row: Row) {
   }
 }
 
-/** Las cuentas de sync son otra puerta de escritura, no un bypass de VE. */
-function validateVeSyncedAccount(row: Row) {
-  if (Boolean(row.isArchived)) return;
-  if (row.currency !== "USD") throw new Error("VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED");
-  const balances = Array.isArray(row.balances) ? row.balances : [];
-  if (balances.length !== 1 || !balances[0] || typeof balances[0] !== "object" || (balances[0] as Row).currency !== "USD") {
-    throw new Error("VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED");
-  }
+/**
+ * Las cuentas de sync son otra puerta de escritura, no un bypass de VE: el
+ * espacio sigue guardando un único saldo USD por cuenta. Pero rechazar el lote
+ * entero convertía un saldo sobrante en un bloqueo permanente: el dispositivo
+ * que abrió un monedero VES al registrar un cambio de divisa reintentaba el
+ * mismo 409 para siempre, arrastrando consigo categorías y movimientos que no
+ * tenían nada que ver. Mientras la cuenta conserve su ancla en USD, se recorta
+ * a ella: el espacio queda conforme y el dispositivo adopta esa misma forma en
+ * la siguiente bajada de `/sync/changes`, que reescribe sus saldos enteros.
+ */
+function normalizeVeSyncedAccount(row: Row): Row {
+  if (Boolean(row.isArchived)) return row;
+  const balances = Array.isArray(row.balances) ? (row.balances as Row[]) : [];
+  const usd = balances.find((balance) => balance && typeof balance === "object" && balance.currency === "USD");
+  // Sin ancla en USD habría que inventarle el saldo a la cuenta: eso sí se rechaza.
+  if (!usd) throw new Error("VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED");
+  if (row.currency === "USD" && balances.length === 1) return row;
+  return { ...row, currency: "USD", balances: [{ ...usd, position: 0, displayOrder: 0 }] };
 }
 
 function existingCustomRateId(rows: { rateSource: string; customRateId: string | null }[] | undefined): string | null | undefined {

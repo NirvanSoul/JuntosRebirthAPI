@@ -130,10 +130,16 @@ no aplica el movimiento: no se fabrican ni se persisten importes contables
 incompletos. Una tasa personalizada ajena o inexistente devuelve
 `CUSTOM_RATE_NOT_FOUND` y tampoco se aplica el batch.
 
-En espacios `VE`, cada `moneyAccounts` del sync debe llevar `currency: "USD"`
-y exactamente un balance `USD`; otro formato devuelve
-`VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED` (409). Los movimientos nuevos solo
-aceptan `USD` o `VES`.
+En espacios `VE`, cada cuenta guarda un único saldo `USD`. Si el sync trae una
+cuenta con divisas de más (un dispositivo que abre un monedero `VES` al
+registrar un cambio de divisa), el lote se acepta y la cuenta se recorta a su
+saldo `USD`: `currency` pasa a `USD` y el resto de balances se descarta, de
+modo que el dispositivo adopta la forma correcta en la siguiente bajada. Una
+cuenta sin ningún saldo `USD` sí devuelve
+`VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED` (409), porque no hay saldo que
+conservar sin inventarlo. Las rutas REST de `moneyAccounts` mantienen el
+rechazo directo: ahí el 409 es accionable y no arrastra el resto del lote. Los
+movimientos nuevos solo aceptan `USD` o `VES`.
 
 En actualizaciones, solo `amountMinor`, `currency`, `occurredOn` o un
 `customRateId` explícito regeneran el snapshot. El resto de cambios conserva la

@@ -385,6 +385,41 @@ describe("space bulk sync", () => {
     expect(batch).not.toHaveBeenCalled();
   });
 
+  it("recorta el monedero VES sobrante de una cuenta VE en lugar de bloquear el lote", async () => {
+    const { db, captured } = fakeDatabase({ countryCode: "VE" });
+
+    await expect(syncSpaceData(db, SPACE, "user-1", payload({
+      moneyAccounts: [{
+        id: "account-local", remoteId: "account-local", name: "Banesco", kind: "bank",
+        icon: null, colorToken: null, currency: "VES", isArchived: false,
+        createdAt: NOW, updatedAt: NOW,
+        balances: [
+          { currency: "USD", openingBalanceMinor: 100000, position: 0 },
+          { currency: "VES", openingBalanceMinor: 250000, position: 1 },
+        ],
+      }],
+    }))).resolves.toMatchObject({ moneyAccountCount: 1 });
+
+    expect(rowsFor(captured, "money_accounts")[0]?.values).toMatchObject({ primaryCurrency: "USD" });
+    expect(rowsFor(captured, "money_account_balances").map((row) => row.values)).toEqual([
+      expect.objectContaining({ currency: "USD", openingBalanceMinor: 100000n, displayOrder: 0 }),
+    ]);
+  });
+
+  it("rechaza una cuenta VE sin ancla en USD", async () => {
+    const { db, batch } = fakeDatabase({ countryCode: "VE" });
+
+    await expect(syncSpaceData(db, SPACE, "user-1", payload({
+      moneyAccounts: [{
+        id: "account-local", remoteId: "account-local", name: "Banesco", kind: "bank",
+        icon: null, colorToken: null, currency: "VES", isArchived: false,
+        createdAt: NOW, updatedAt: NOW,
+        balances: [{ currency: "VES", openingBalanceMinor: 250000, position: 0 }],
+      }],
+    }))).rejects.toThrow("VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED");
+    expect(batch).not.toHaveBeenCalled();
+  });
+
   it("rejects client-supplied snapshot values before writing the batch", async () => {
     const { db, batch } = fakeDatabase();
     await expect(syncSpaceData(db, SPACE, "user-1", payload({
