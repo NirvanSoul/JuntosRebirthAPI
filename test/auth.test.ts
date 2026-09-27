@@ -85,6 +85,12 @@ describe("Better Auth Factory", () => {
       | { options?: { rateLimit?: { max?: number; window?: number } } }
       | undefined;
     expect(otpPlugin?.options?.rateLimit).toEqual({ max: 3, window: 60 * 60 });
+    // Comprobar el código no puede compartir el 3/hora de los envíos.
+    expect(auth.options.rateLimit?.customRules?.["/email-otp/reset-password"]).toEqual({
+      window: 10 * 60,
+      max: 10,
+    });
+    expect(auth.options.advanced?.ipAddress?.ipAddressHeaders?.[0]).toBe("cf-connecting-ip");
     expect(rateLimit.key).toBeDefined();
     expect(rateLimit.lastRequest).toBeDefined();
     expect(auth.options.trustedOrigins).toEqual([

@@ -30,6 +30,12 @@ const OTP_REQUEST_PATHS = new Set([
   "/email-otp/request-password-reset",
   "/forget-password/email-otp",
 ]);
+const OTP_CHECK_PATHS = [
+  "/email-otp/check-verification-otp",
+  "/email-otp/verify-email",
+  "/email-otp/reset-password",
+  "/sign-in/email-otp",
+];
 
 /**
  * Better Auth se configura una vez por isolate. Construirlo por request
@@ -115,6 +121,23 @@ function buildAuth(env: Bindings) {
     // contador entre instancias y evita que se pueda eludir rotando isolate.
     rateLimit: {
       storage: "database",
+      // El `rateLimit` del plugin OTP aplica el mismo 3/hora a todas sus
+      // rutas, también a las que solo comprueban el código. La app llama a
+      // `check-verification-otp` y luego a `reset-password`: un reintento o
+      // un dígito mal escrito dejaban al usuario una hora sin poder cambiar la
+      // contraseña. La fuerza bruta ya está acotada por los 3 intentos por
+      // código y los 3 envíos por correo y hora.
+      customRules: Object.fromEntries(
+        OTP_CHECK_PATHS.map((path) => [path, { window: 10 * 60, max: 10 }]),
+      ),
+    },
+    advanced: {
+      // Better Auth busca la IP en `x-forwarded-for`; en Workers la IP real
+      // llega en `cf-connecting-ip`, que el cliente no puede falsificar. Sin
+      // ella, todos los usuarios compartían un único contador por ruta.
+      ipAddress: {
+        ipAddressHeaders: ["cf-connecting-ip", "x-forwarded-for"],
+      },
     },
     plugins: [
       expo(),

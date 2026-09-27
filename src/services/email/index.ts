@@ -32,16 +32,50 @@ export async function sendSpaceInvitation(
   });
 }
 
+/**
+ * Correo de un código de un solo uso. El código abre el asunto porque es lo
+ * que muestra la notificación del teléfono: el usuario lo lee (o iOS lo
+ * ofrece como autocompletado «Desde Mail») sin salir de la app.
+ */
+function otpMessage(
+  to: string,
+  otp: string,
+  copy: { subject: string; intro: string; footer?: string },
+) {
+  const footer = copy.footer ?? "Si no lo pediste tú, ignora este mensaje.";
+  return {
+    to,
+    subject: `${otp} ${copy.subject}`,
+    text: [
+      `${copy.intro}: ${otp}`,
+      "",
+      "Caduca en 10 minutos.",
+      "",
+      footer,
+    ].join("\n"),
+    html: [
+      `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:420px;margin:0 auto;padding:24px;color:#1a1a1a">`,
+      `<p style="margin:0 0 16px;font-size:16px">${copy.intro}:</p>`,
+      `<p style="margin:0 0 16px;font-size:32px;font-weight:700;letter-spacing:6px">${otp}</p>`,
+      `<p style="margin:0 0 24px;font-size:14px;color:#555">Caduca en 10 minutos.</p>`,
+      `<p style="margin:0;font-size:12px;color:#888">${footer}</p>`,
+      `</div>`,
+    ].join(""),
+  };
+}
+
 export async function sendVerificationOtp(
   config: EmailConfig,
   input: { to: string; otp: string },
   send: EmailSender = sendEmail,
 ): Promise<EmailResult> {
-  return send(config, {
-    to: input.to,
-    subject: "Confirma tu correo en Juntoss",
-    text: `Tu código de verificación es ${input.otp}. Caduca en 10 minutos.`,
-  });
+  return send(
+    config,
+    otpMessage(input.to, input.otp, {
+      subject: "es tu código para confirmar tu correo en Juntoss",
+      intro: "Tu código de verificación de Juntoss es",
+    }),
+  );
 }
 
 export async function sendPasswordResetOtp(
@@ -49,15 +83,14 @@ export async function sendPasswordResetOtp(
   input: { to: string; otp: string },
   send: EmailSender = sendEmail,
 ): Promise<EmailResult> {
-  return send(config, {
-    to: input.to,
-    subject: "Restablece tu contraseña de Juntoss",
-    text: [
-      `Tu código para restablecer la contraseña es ${input.otp}. Caduca en 10 minutos.`,
-      "",
-      "Si no pediste este cambio, ignora este mensaje: tu contraseña sigue intacta.",
-    ].join("\n"),
-  });
+  return send(
+    config,
+    otpMessage(input.to, input.otp, {
+      subject: "es tu código para restablecer tu contraseña de Juntoss",
+      intro: "Tu código para restablecer la contraseña de Juntoss es",
+      footer: "Si no pediste este cambio, ignora este mensaje: tu contraseña sigue intacta.",
+    }),
+  );
 }
 
 export async function sendSignInOtp(
@@ -65,9 +98,11 @@ export async function sendSignInOtp(
   input: { to: string; otp: string },
   send: EmailSender = sendEmail,
 ): Promise<EmailResult> {
-  return send(config, {
-    to: input.to,
-    subject: "Tu código de acceso a Juntoss",
-    text: `Tu código de acceso es ${input.otp}. Caduca en 10 minutos.`,
-  });
+  return send(
+    config,
+    otpMessage(input.to, input.otp, {
+      subject: "es tu código de acceso a Juntoss",
+      intro: "Tu código de acceso a Juntoss es",
+    }),
+  );
 }
