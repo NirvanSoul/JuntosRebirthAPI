@@ -34,6 +34,33 @@ export type SpaceSyncResult = {
   transactions?: { localId: string; remoteId: string; updatedAt: string; accountingAmountMinorUsd: string | null; exchangeSnapshot: ExchangeSnapshotDTO | null }[];
 };
 
+export type SyncValidationCode =
+  | "INVALID_SYNC_PAYLOAD"
+  | "INVALID_MONEY_ACCOUNT_CURRENCY"
+  | "INVALID_TRANSACTION_CURRENCY"
+  | "INVALID_CATEGORY_REFERENCE"
+  | "INVALID_MONEY_ACCOUNT_REFERENCE"
+  | "INVALID_RECURRING_SERIES_REFERENCE"
+  | "ENTITY_BELONGS_TO_ANOTHER_SPACE"
+  | "VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED";
+
+export class SyncValidationError extends Error {
+  constructor(
+    readonly apiCode: SyncValidationCode,
+    readonly issue: {
+      path: (string | number)[];
+      reason: string;
+      entityType?: string;
+      localEntityId?: string;
+      countryCode?: string | null;
+      canonicalCurrency?: string;
+    },
+  ) {
+    super(apiCode);
+    this.name = "SyncValidationError";
+  }
+}
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 type Existing = { id: string; sourceInstallationId: string | null; sourceLocalId: string | null };
@@ -224,8 +251,8 @@ export async function syncSpaceData(
   creatorCountryCode: string | null = null,
 ): Promise<SpaceSyncResult> {
   const installationId = text(payload.installationId);
-  if (!installationId) throw new Error("INVALID_PAYLOAD");
-  for (const transaction of payload.transactions) validateSyncedTransaction(transaction);
+  if (!installationId) throw syncIssue("INVALID_SYNC_PAYLOAD", ["installationId"], "REQUIRED_STRING");
+  validatePayload(payload);
 
   const [space] = await db
     .select({ currency: spaces.currency, countryCode: spaces.countryCode })
@@ -233,9 +260,16 @@ export async function syncSpaceData(
     .where(eq(spaces.id, spaceId))
     .limit(1);
   if (!space) throw new Error("SPACE_NOT_FOUND");
-  const moneyAccountRows = space.countryCode === "VE"
-    ? payload.moneyAccounts.map(normalizeVeSyncedAccount)
-    : payload.moneyAccounts;
+  await assertRemoteIdsBelongToSpace(db, spaceId, payload);
+  if (space.countryCode === "VE") {
+    for (const [index, account] of payload.moneyAccounts.entries()) {
+      validateVeSyncedAccount(account, index);
+    }
+  }
+  for (const [index, account] of payload.moneyAccounts.entries()) {
+    validatePrimaryAccountBalance(account, index);
+  }
+  const moneyAccountRows = payload.moneyAccounts;
 
   const [
     existingCategories,
@@ -354,7 +388,7 @@ export async function syncSpaceData(
     const existingTransactionById = new Map(
       existingTransactions.map((transaction) => [transaction.id, transaction]),
     );
-    for (const transaction of payload.transactions) {
+    for (const [index, transaction] of payload.transactions.entries()) {
       if (transaction.currency === "USD" || transaction.currency === "VES") continue;
       const id = transactionIds.get(text(transaction.id));
       const existing = id ? existingTransactionById.get(id) : undefined;
@@ -369,7 +403,15 @@ export async function syncSpaceData(
         knownAccounts,
         knownSeries,
       )) {
-        throw new Error("INVALID_PAYLOAD");
+        throw syncIssue(
+          "INVALID_TRANSACTION_CURRENCY",
+          ["transactions", index, "currency"],
+          "VE_ALLOWS_USD_OR_VES",
+          transaction,
+          "transaction",
+          "VE",
+          "USD",
+        );
       }
     }
   }
@@ -381,7 +423,7 @@ export async function syncSpaceData(
   const writes: unknown[] = [];
   const syncedTransactions: SpaceSyncResult["transactions"] = [];
 
-  for (const row of payload.categories) {
+  for (const [categoryIndex, row] of payload.categories.entries()) {
     const localId = text(row.id);
     const id = categoryIds.get(localId)!;
     const updatedAt = date(row.updatedAt, now);
@@ -427,10 +469,25 @@ export async function syncSpaceData(
         }),
     );
 
-    // El cliente todavía envía el presupuesto local como un único importe sin
-    // moneda propia; se registra en la del espacio.
-    const budget = row.budgetMinor;
-    if (typeof budget === "number" && Number.isSafeInteger(budget) && budget > 0) {
+    const syncedBudgets = Array.isArray(row.budgets) ? row.budgets as Row[] : null;
+    if (syncedBudgets) {
+      writes.push(db.delete(categoryBudgets).where(eq(categoryBudgets.categoryId, id)));
+      for (const [budgetIndex, budget] of syncedBudgets.entries()) {
+        const currency = currencyCode(budget.currency, ["categories", categoryIndex, "budgets", budgetIndex, "currency"], row, "category");
+        const amount = syncInteger(budget.budgetAmountMinor, ["categories", categoryIndex, "budgets", budgetIndex, "budgetAmountMinor"], row, "category");
+        if (amount < 0) throw syncIssue("INVALID_SYNC_PAYLOAD", ["categories", categoryIndex, "budgets", budgetIndex, "budgetAmountMinor"], "MUST_BE_NON_NEGATIVE", row, "category");
+        writes.push(db.insert(categoryBudgets).values({
+          categoryId: id,
+          currency,
+          budgetAmountMinor: BigInt(amount),
+          createdBy: userId,
+        }));
+      }
+    } else if (row.budgetMinor !== null && row.budgetMinor !== undefined) {
+      // Compatibilidad con clientes anteriores: un único presupuesto usa la
+      // moneda canónica del espacio.
+      const budget = syncInteger(row.budgetMinor, ["categories", categoryIndex, "budgetMinor"], row, "category");
+      if (budget < 0) throw syncIssue("INVALID_SYNC_PAYLOAD", ["categories", categoryIndex, "budgetMinor"], "MUST_BE_NON_NEGATIVE", row, "category");
       writes.push(
         db
           .insert(categoryBudgets)
@@ -467,7 +524,7 @@ export async function syncSpaceData(
     );
   }
 
-  for (const row of moneyAccountRows) {
+  for (const [accountIndex, row] of moneyAccountRows.entries()) {
     const localId = text(row.id);
     const id = accountIds.get(localId)!;
     const updatedAt = date(row.updatedAt, now);
@@ -516,27 +573,29 @@ export async function syncSpaceData(
     writes.push(
       db.delete(moneyAccountBalances).where(eq(moneyAccountBalances.moneyAccountId, id)),
     );
-    for (const balance of balances) {
+    for (const [balanceIndex, balance] of balances.entries()) {
       writes.push(
         db.insert(moneyAccountBalances).values({
           moneyAccountId: id,
-          currency: text(balance.currency),
-          openingBalanceMinor: BigInt(integer(balance.openingBalanceMinor ?? 0)),
-          displayOrder: integer(balance.position ?? balance.displayOrder ?? 0),
+          currency: currencyCode(balance.currency, ["moneyAccounts", accountIndex, "balances", balanceIndex, "currency"], row, "moneyAccount"),
+          openingBalanceMinor: BigInt(syncInteger(balance.openingBalanceMinor, ["moneyAccounts", accountIndex, "balances", balanceIndex, "openingBalanceMinor"], row, "moneyAccount")),
+          displayOrder: syncInteger(balance.position ?? balance.displayOrder, ["moneyAccounts", accountIndex, "balances", balanceIndex, "position"], row, "moneyAccount"),
         }),
       );
     }
   }
 
-  for (const row of payload.recurringSeries) {
+  for (const [seriesIndex, row] of payload.recurringSeries.entries()) {
     const localId = text(row.id);
     const id = seriesIds.get(localId)!;
     const updatedAt = date(row.updatedAt, now);
     const isArchived = Boolean(row.isArchived);
     const categoryId = reference(knownCategories, row.categoryId);
-    if (!categoryId) throw new Error("INVALID_GRAPH");
+    if (!categoryId) throw syncIssue("INVALID_CATEGORY_REFERENCE", ["recurringSeries", seriesIndex, "categoryId"], "REFERENCE_NOT_FOUND", row, "recurringSeries");
+    const moneyAccountId = nullableReference(knownAccounts, row.moneyAccountId);
+    if (moneyAccountId === undefined) throw syncIssue("INVALID_MONEY_ACCOUNT_REFERENCE", ["recurringSeries", seriesIndex, "moneyAccountId"], "REFERENCE_NOT_FOUND", row, "recurringSeries");
 
-    const rawAmount = integer(row.amountMinor);
+    const rawAmount = syncInteger(row.amountMinor, ["recurringSeries", seriesIndex, "amountMinor"], row, "recurringSeries");
     const amountMinor = BigInt(Math.max(1, rawAmount));
     const startsOn = dateOnly(row.startsOn, now.toISOString().slice(0, 10));
     const nextOccurrenceOn = isArchived
@@ -550,7 +609,7 @@ export async function syncSpaceData(
           id,
           spaceId,
           categoryId,
-          moneyAccountId: reference(knownAccounts, row.moneyAccountId),
+          moneyAccountId,
           createdBy: userId,
           type: transactionType(row.type),
           amountMinor,
@@ -559,7 +618,7 @@ export async function syncSpaceData(
           frequency: frequency(row.frequency),
           startsOn,
           nextOccurrenceOn,
-          generatedOccurrences: integer(row.generatedOccurrences ?? 0),
+          generatedOccurrences: syncInteger(row.generatedOccurrences ?? 0, ["recurringSeries", seriesIndex, "generatedOccurrences"], row, "recurringSeries"),
           ...source(localId),
           isArchived,
           archivedAt: isArchived ? updatedAt : null,
@@ -593,7 +652,7 @@ export async function syncSpaceData(
 
   const writtenTransactionIds = new Set<string>();
   const syncedTransactionById = new Map<string, Omit<NonNullable<SpaceSyncResult["transactions"]>[number], "localId">>();
-  for (const row of payload.transactions) {
+  for (const [transactionIndex, row] of payload.transactions.entries()) {
     const localId = text(row.id);
     const id = transactionIds.get(localId)!;
     // Dos réplicas idénticas de la misma ocurrencia en este lote escriben una
@@ -603,16 +662,22 @@ export async function syncSpaceData(
     const updatedAt = date(row.updatedAt, now);
     const isArchived = Boolean(row.isArchived);
     const categoryId = reference(knownCategories, row.categoryId);
-    if (!categoryId) throw new Error("INVALID_GRAPH");
+    if (!categoryId) throw syncIssue("INVALID_CATEGORY_REFERENCE", ["transactions", transactionIndex, "categoryId"], "REFERENCE_NOT_FOUND", row, "transaction");
+    const moneyAccountId = nullableReference(knownAccounts, row.moneyAccountId);
+    if (moneyAccountId === undefined) throw syncIssue("INVALID_MONEY_ACCOUNT_REFERENCE", ["transactions", transactionIndex, "moneyAccountId"], "REFERENCE_NOT_FOUND", row, "transaction");
+    const recurrenceSeriesId = nullableReference(knownSeries, row.recurrenceSeriesId);
+    if (recurrenceSeriesId === undefined) throw syncIssue("INVALID_RECURRING_SERIES_REFERENCE", ["transactions", transactionIndex, "recurrenceSeriesId"], "REFERENCE_NOT_FOUND", row, "transaction");
 
-    const rawAmount = integer(row.amountMinor);
+    const rawAmount = syncInteger(row.amountMinor, ["transactions", transactionIndex, "amountMinor"], row, "transaction");
     const amountMinor = BigInt(Math.max(1, rawAmount));
     const occurredOn = dateOnly(row.occurredOn, now.toISOString().slice(0, 10));
     const currency = text(row.currency);
     const existing = existingTransactions.find((transaction) => transaction.id === id) as ExistingTransaction | undefined;
     const hasCustomRateId = Object.prototype.hasOwnProperty.call(row, "customRateId");
     const customRateId = hasCustomRateId ? customRateIdValue(row.customRateId) : existingCustomRateId(referenceRatesByTransaction.get(id));
-    if (hasCustomRateId && customRateId === undefined) throw new Error("INVALID_PAYLOAD");
+    if (hasCustomRateId && customRateId === undefined) {
+      throw syncIssue("INVALID_SYNC_PAYLOAD", ["transactions", transactionIndex, "customRateId"], "INVALID_UUID", row, "transaction");
+    }
 
     // Una creación siempre necesita cálculo. En updates solo cambia la
     // congelación ante campos monetarios o la elección explícita de CUSTOM;
@@ -634,7 +699,7 @@ export async function syncSpaceData(
           id,
           spaceId,
           categoryId,
-          moneyAccountId: reference(knownAccounts, row.moneyAccountId),
+          moneyAccountId,
           createdBy: userId,
           type: transactionType(row.type),
           amountMinor,
@@ -645,7 +710,7 @@ export async function syncSpaceData(
           note: stringOrNull(row.note),
           recurrence: recurrenceKind(row.recurrence),
           recurrenceGroupId: stringOrNull(row.recurrenceGroupId),
-          recurrenceSeriesId: reference(knownSeries, row.recurrenceSeriesId),
+          recurrenceSeriesId,
           sourceLocalTransactionId: stringOrNull(row.sourceTransactionId),
           ...source(localId),
           isArchived,
@@ -745,7 +810,148 @@ function customRateIdValue(value: unknown): string | null | undefined {
   return typeof value === "string" && UUID.test(value) ? value : undefined;
 }
 
-function validateSyncedTransaction(row: Row) {
+async function assertRemoteIdsBelongToSpace(
+  db: Database,
+  spaceId: string,
+  payload: SpaceSyncPayload,
+): Promise<void> {
+  const categoryIds = remoteUuidIds(payload.categories);
+  const accountIds = remoteUuidIds(payload.moneyAccounts);
+  const seriesIds = remoteUuidIds(payload.recurringSeries);
+  const transactionIds = remoteUuidIds(payload.transactions);
+  const [categoryOwners, accountOwners, seriesOwners, transactionOwners] = await Promise.all([
+    categoryIds.length
+      ? db.select({ id: categories.id, spaceId: categories.spaceId }).from(categories).where(inArray(categories.id, categoryIds))
+      : Promise.resolve([]),
+    accountIds.length
+      ? db.select({ id: moneyAccounts.id, spaceId: moneyAccounts.spaceId }).from(moneyAccounts).where(inArray(moneyAccounts.id, accountIds))
+      : Promise.resolve([]),
+    seriesIds.length
+      ? db.select({ id: recurringTransactionSeries.id, spaceId: recurringTransactionSeries.spaceId }).from(recurringTransactionSeries).where(inArray(recurringTransactionSeries.id, seriesIds))
+      : Promise.resolve([]),
+    transactionIds.length
+      ? db.select({ id: transactions.id, spaceId: transactions.spaceId }).from(transactions).where(inArray(transactions.id, transactionIds))
+      : Promise.resolve([]),
+  ]);
+
+  assertCollectionOwners("categories", payload.categories, categoryOwners, spaceId);
+  assertCollectionOwners("moneyAccounts", payload.moneyAccounts, accountOwners, spaceId);
+  assertCollectionOwners("recurringSeries", payload.recurringSeries, seriesOwners, spaceId);
+  assertCollectionOwners("transactions", payload.transactions, transactionOwners, spaceId);
+}
+
+function remoteUuidIds(rows: Row[]): string[] {
+  return [...new Set(rows.flatMap((row) =>
+    typeof row.remoteId === "string" && UUID.test(row.remoteId) ? [row.remoteId] : []
+  ))];
+}
+
+function assertCollectionOwners(
+  collection: keyof Pick<SpaceSyncPayload, "categories" | "moneyAccounts" | "recurringSeries" | "transactions">,
+  rows: Row[],
+  owners: { id: string; spaceId: string }[],
+  spaceId: string,
+): void {
+  const foreignIds = new Set(owners.filter((owner) => owner.spaceId !== spaceId).map((owner) => owner.id));
+  const index = rows.findIndex((row) => typeof row.remoteId === "string" && foreignIds.has(row.remoteId));
+  if (index < 0) return;
+  throw syncIssue(
+    "ENTITY_BELONGS_TO_ANOTHER_SPACE",
+    [collection, index, "remoteId"],
+    "REMOTE_ID_NOT_AVAILABLE_IN_SPACE",
+    rows[index],
+    collection,
+  );
+}
+
+function validatePayload(payload: SpaceSyncPayload): void {
+  validateUniqueLocalIds(payload);
+  for (const [index, row] of payload.categories.entries()) validateSyncedCategory(row, index);
+  for (const [index, row] of payload.moneyAccounts.entries()) validateSyncedAccount(row, index);
+  for (const [index, row] of payload.recurringSeries.entries()) validateSyncedSeries(row, index);
+  for (const [index, row] of payload.transactions.entries()) validateSyncedTransaction(row, index);
+}
+
+function validateSyncedCategory(row: Row, index: number): void {
+  assertAllowedFields(row, index, "categories", "category", [
+    "id", "remoteId", "name", "icon", "colorToken", "budgetMinor", "budgets",
+    "isDefault", "templateKey", "isArchived", "createdAt", "updatedAt", "createdBy",
+  ]);
+  requiredText(row.name, ["categories", index, "name"], row, "category");
+  requiredBoolean(row.isDefault, ["categories", index, "isDefault"], row, "category");
+  requiredBoolean(row.isArchived, ["categories", index, "isArchived"], row, "category");
+  requiredTimestamp(row.createdAt, ["categories", index, "createdAt"], row, "category");
+  requiredTimestamp(row.updatedAt, ["categories", index, "updatedAt"], row, "category");
+  if (row.budgetMinor !== null && row.budgetMinor !== undefined) {
+    nonNegativeInteger(row.budgetMinor, ["categories", index, "budgetMinor"], row, "category");
+  }
+  if (row.budgets !== undefined) {
+    if (!Array.isArray(row.budgets)) throw syncIssue("INVALID_SYNC_PAYLOAD", ["categories", index, "budgets"], "EXPECTED_ARRAY", row, "category");
+    const currencies = new Set<string>();
+    for (const [budgetIndex, value] of row.budgets.entries()) {
+      if (!isRow(value)) throw syncIssue("INVALID_SYNC_PAYLOAD", ["categories", index, "budgets", budgetIndex], "EXPECTED_OBJECT", row, "category");
+      const currency = currencyCode(value.currency, ["categories", index, "budgets", budgetIndex, "currency"], row, "category");
+      if (currencies.has(currency)) throw syncIssue("INVALID_SYNC_PAYLOAD", ["categories", index, "budgets", budgetIndex, "currency"], "DUPLICATE_CURRENCY", row, "category");
+      currencies.add(currency);
+      nonNegativeInteger(value.budgetAmountMinor, ["categories", index, "budgets", budgetIndex, "budgetAmountMinor"], row, "category");
+    }
+  }
+}
+
+function validateSyncedAccount(row: Row, index: number): void {
+  assertAllowedFields(row, index, "moneyAccounts", "moneyAccount", [
+    "id", "remoteId", "name", "kind", "icon", "colorToken", "currency", "balances",
+    "isArchived", "createdAt", "updatedAt", "createdBy",
+  ]);
+  requiredText(row.name, ["moneyAccounts", index, "name"], row, "moneyAccount");
+  if (row.kind !== "cash" && row.kind !== "bank" && row.kind !== "card") {
+    throw syncIssue("INVALID_SYNC_PAYLOAD", ["moneyAccounts", index, "kind"], "INVALID_ACCOUNT_KIND", row, "moneyAccount");
+  }
+  currencyCode(row.currency, ["moneyAccounts", index, "currency"], row, "moneyAccount");
+  requiredBoolean(row.isArchived, ["moneyAccounts", index, "isArchived"], row, "moneyAccount");
+  requiredTimestamp(row.createdAt, ["moneyAccounts", index, "createdAt"], row, "moneyAccount");
+  requiredTimestamp(row.updatedAt, ["moneyAccounts", index, "updatedAt"], row, "moneyAccount");
+  if (!Array.isArray(row.balances) || row.balances.length === 0) {
+    throw syncIssue("INVALID_SYNC_PAYLOAD", ["moneyAccounts", index, "balances"], "REQUIRES_AT_LEAST_ONE_BALANCE", row, "moneyAccount");
+  }
+  const currencies = new Set<string>();
+  for (const [balanceIndex, value] of row.balances.entries()) {
+    if (!isRow(value)) throw syncIssue("INVALID_SYNC_PAYLOAD", ["moneyAccounts", index, "balances", balanceIndex], "EXPECTED_OBJECT", row, "moneyAccount");
+    const currency = currencyCode(value.currency, ["moneyAccounts", index, "balances", balanceIndex, "currency"], row, "moneyAccount");
+    if (currencies.has(currency)) throw syncIssue("INVALID_SYNC_PAYLOAD", ["moneyAccounts", index, "balances", balanceIndex, "currency"], "DUPLICATE_CURRENCY", row, "moneyAccount");
+    currencies.add(currency);
+    syncInteger(value.openingBalanceMinor, ["moneyAccounts", index, "balances", balanceIndex, "openingBalanceMinor"], row, "moneyAccount");
+    nonNegativeInteger(value.position ?? value.displayOrder, ["moneyAccounts", index, "balances", balanceIndex, "position"], row, "moneyAccount");
+  }
+  // La regla de pertenencia de la moneda primaria se comprueba después de
+  // conocer el país, para que VE pueda devolver su código específico.
+}
+
+function validateSyncedSeries(row: Row, index: number): void {
+  assertAllowedFields(row, index, "recurringSeries", "recurringSeries", [
+    "id", "remoteId", "categoryId", "moneyAccountId", "createdBy", "type", "amountMinor",
+    "currency", "title", "frequency", "startsOn", "generatedOccurrences", "nextOccurrenceOn",
+    "isArchived", "createdAt", "updatedAt",
+  ]);
+  requiredText(row.categoryId, ["recurringSeries", index, "categoryId"], row, "recurringSeries");
+  requiredTransactionType(row.type, ["recurringSeries", index, "type"], row, "recurringSeries");
+  positiveInteger(row.amountMinor, ["recurringSeries", index, "amountMinor"], row, "recurringSeries");
+  currencyCode(row.currency, ["recurringSeries", index, "currency"], row, "recurringSeries");
+  requiredText(row.title, ["recurringSeries", index, "title"], row, "recurringSeries");
+  if (!new Set(["weekly", "biweekly", "monthly", "custom"]).has(String(row.frequency))) {
+    throw syncIssue("INVALID_SYNC_PAYLOAD", ["recurringSeries", index, "frequency"], "INVALID_FREQUENCY", row, "recurringSeries");
+  }
+  requiredDateOnly(row.startsOn, ["recurringSeries", index, "startsOn"], row, "recurringSeries");
+  if (row.generatedOccurrences !== undefined) {
+    nonNegativeInteger(row.generatedOccurrences, ["recurringSeries", index, "generatedOccurrences"], row, "recurringSeries");
+  }
+  if (row.nextOccurrenceOn !== null && row.nextOccurrenceOn !== undefined) requiredDateOnly(row.nextOccurrenceOn, ["recurringSeries", index, "nextOccurrenceOn"], row, "recurringSeries");
+  requiredBoolean(row.isArchived, ["recurringSeries", index, "isArchived"], row, "recurringSeries");
+  requiredTimestamp(row.createdAt, ["recurringSeries", index, "createdAt"], row, "recurringSeries");
+  requiredTimestamp(row.updatedAt, ["recurringSeries", index, "updatedAt"], row, "recurringSeries");
+}
+
+function validateSyncedTransaction(row: Row, index: number) {
   // Las equivalencias congeladas solo se originan en el servidor. Este filtro
   // explícito evita que un cliente offline (o una versión antigua modificada)
   // pueda inyectar una tasa que luego parezca histórica.
@@ -755,30 +961,140 @@ function validateSyncedTransaction(row: Row) {
     "recurrenceGroupId", "recurrenceSeriesId", "sourceTransactionId", "isArchived",
     "createdAt", "updatedAt", "customRateId",
   ]);
-  if (Object.keys(row).some((field) => !allowedFields.has(field))) throw new Error("INVALID_PAYLOAD");
+  const unexpected = Object.keys(row).find((field) => !allowedFields.has(field));
+  if (unexpected) throw syncIssue("INVALID_SYNC_PAYLOAD", ["transactions", index, unexpected], "FIELD_NOT_ALLOWED", row, "transaction");
   if (Object.prototype.hasOwnProperty.call(row, "customRateId") && customRateIdValue(row.customRateId) === undefined) {
-    throw new Error("INVALID_PAYLOAD");
+    throw syncIssue("INVALID_SYNC_PAYLOAD", ["transactions", index, "customRateId"], "INVALID_UUID", row, "transaction");
+  }
+  requiredText(row.categoryId, ["transactions", index, "categoryId"], row, "transaction");
+  requiredTransactionType(row.type, ["transactions", index, "type"], row, "transaction");
+  positiveInteger(row.amountMinor, ["transactions", index, "amountMinor"], row, "transaction");
+  currencyCode(row.currency, ["transactions", index, "currency"], row, "transaction");
+  requiredText(row.title, ["transactions", index, "title"], row, "transaction");
+  requiredDateOnly(row.occurredOn, ["transactions", index, "occurredOn"], row, "transaction");
+  requiredBoolean(row.isArchived, ["transactions", index, "isArchived"], row, "transaction");
+  requiredTimestamp(row.createdAt, ["transactions", index, "createdAt"], row, "transaction");
+  requiredTimestamp(row.updatedAt, ["transactions", index, "updatedAt"], row, "transaction");
+}
+
+/** Las cuentas de sync son otra puerta de escritura, no un bypass de VE. */
+function validateVeSyncedAccount(row: Row, index: number): void {
+  if (Boolean(row.isArchived)) return;
+  const balances = Array.isArray(row.balances) ? (row.balances as Row[]) : [];
+  if (balances.length !== 1 || balances[0]?.currency !== "USD") {
+    throw syncIssue("VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED", ["moneyAccounts", index, "balances"], "VE_REQUIRES_SINGLE_USD_BALANCE", row, "moneyAccount", "VE", "USD");
+  }
+  if (row.currency !== "USD") {
+    throw syncIssue("INVALID_MONEY_ACCOUNT_CURRENCY", ["moneyAccounts", index, "currency"], "VE_REQUIRES_USD_ACCOUNT", row, "moneyAccount", "VE", "USD");
   }
 }
 
-/**
- * Las cuentas de sync son otra puerta de escritura, no un bypass de VE: el
- * espacio sigue guardando un único saldo USD por cuenta. Pero rechazar el lote
- * entero convertía un saldo sobrante en un bloqueo permanente: el dispositivo
- * que abrió un monedero VES al registrar un cambio de divisa reintentaba el
- * mismo 409 para siempre, arrastrando consigo categorías y movimientos que no
- * tenían nada que ver. Mientras la cuenta conserve su ancla en USD, se recorta
- * a ella: el espacio queda conforme y el dispositivo adopta esa misma forma en
- * la siguiente bajada de `/sync/changes`, que reescribe sus saldos enteros.
- */
-function normalizeVeSyncedAccount(row: Row): Row {
-  if (Boolean(row.isArchived)) return row;
-  const balances = Array.isArray(row.balances) ? (row.balances as Row[]) : [];
-  const usd = balances.find((balance) => balance && typeof balance === "object" && balance.currency === "USD");
-  // Sin ancla en USD habría que inventarle el saldo a la cuenta: eso sí se rechaza.
-  if (!usd) throw new Error("VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED");
-  if (row.currency === "USD" && balances.length === 1) return row;
-  return { ...row, currency: "USD", balances: [{ ...usd, position: 0, displayOrder: 0 }] };
+function validatePrimaryAccountBalance(row: Row, index: number): void {
+  const balances = row.balances as Row[];
+  if (!balances.some((balance) => balance.currency === row.currency)) {
+    throw syncIssue("INVALID_SYNC_PAYLOAD", ["moneyAccounts", index, "balances"], "PRIMARY_CURRENCY_BALANCE_REQUIRED", row, "moneyAccount");
+  }
+}
+
+function validateUniqueLocalIds(payload: SpaceSyncPayload): void {
+  for (const collection of ["categories", "moneyAccounts", "recurringSeries", "transactions"] as const) {
+    const seen = new Set<string>();
+    for (const [index, row] of payload[collection].entries()) {
+      const id = text(row.id);
+      if (!id) throw syncIssue("INVALID_SYNC_PAYLOAD", [collection, index, "id"], "REQUIRED_STRING", row, collection);
+      if (seen.has(id)) throw syncIssue("INVALID_SYNC_PAYLOAD", [collection, index, "id"], "DUPLICATE_LOCAL_ID", row, collection);
+      seen.add(id);
+    }
+  }
+}
+
+function syncIssue(
+  code: SyncValidationCode,
+  path: (string | number)[],
+  reason: string,
+  row?: Row,
+  entityType?: string,
+  countryCode?: string | null,
+  canonicalCurrency?: string,
+) {
+  return new SyncValidationError(code, {
+    path,
+    reason,
+    entityType,
+    localEntityId: row ? text(row.id) || undefined : undefined,
+    countryCode,
+    canonicalCurrency,
+  });
+}
+
+function syncInteger(value: unknown, path: (string | number)[], row: Row, entityType: string) {
+  if (typeof value !== "number" || !Number.isSafeInteger(value)) {
+    throw syncIssue("INVALID_SYNC_PAYLOAD", path, "EXPECTED_SAFE_INTEGER_NUMBER", row, entityType);
+  }
+  return value;
+}
+
+function nonNegativeInteger(value: unknown, path: (string | number)[], row: Row, entityType: string) {
+  const parsed = syncInteger(value, path, row, entityType);
+  if (parsed < 0) throw syncIssue("INVALID_SYNC_PAYLOAD", path, "MUST_BE_NON_NEGATIVE", row, entityType);
+  return parsed;
+}
+
+function positiveInteger(value: unknown, path: (string | number)[], row: Row, entityType: string) {
+  const parsed = syncInteger(value, path, row, entityType);
+  if (parsed <= 0) throw syncIssue("INVALID_SYNC_PAYLOAD", path, "MUST_BE_POSITIVE", row, entityType);
+  return parsed;
+}
+
+function currencyCode(value: unknown, path: (string | number)[], row: Row, entityType: string) {
+  if (typeof value !== "string" || !/^[A-Z]{3}$/.test(value)) {
+    throw syncIssue("INVALID_SYNC_PAYLOAD", path, "EXPECTED_ISO_4217_CODE", row, entityType);
+  }
+  return value;
+}
+
+function requiredText(value: unknown, path: (string | number)[], row: Row, entityType: string): string {
+  const parsed = text(value);
+  if (!parsed) throw syncIssue("INVALID_SYNC_PAYLOAD", path, "REQUIRED_STRING", row, entityType);
+  return parsed;
+}
+
+function requiredBoolean(value: unknown, path: (string | number)[], row: Row, entityType: string): void {
+  if (typeof value !== "boolean") throw syncIssue("INVALID_SYNC_PAYLOAD", path, "EXPECTED_BOOLEAN", row, entityType);
+}
+
+function requiredTimestamp(value: unknown, path: (string | number)[], row: Row, entityType: string): void {
+  if (typeof value !== "string" || Number.isNaN(Date.parse(value))) {
+    throw syncIssue("INVALID_SYNC_PAYLOAD", path, "EXPECTED_ISO_TIMESTAMP", row, entityType);
+  }
+}
+
+function requiredDateOnly(value: unknown, path: (string | number)[], row: Row, entityType: string): void {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(Date.parse(`${value}T00:00:00.000Z`))) {
+    throw syncIssue("INVALID_SYNC_PAYLOAD", path, "EXPECTED_ISO_DATE", row, entityType);
+  }
+}
+
+function requiredTransactionType(value: unknown, path: (string | number)[], row: Row, entityType: string): void {
+  if (value !== "income" && value !== "expense") {
+    throw syncIssue("INVALID_SYNC_PAYLOAD", path, "INVALID_TRANSACTION_TYPE", row, entityType);
+  }
+}
+
+function assertAllowedFields(
+  row: Row,
+  index: number,
+  collection: string,
+  entityType: string,
+  fields: string[],
+): void {
+  const allowed = new Set(fields);
+  const unexpected = Object.keys(row).find((field) => !allowed.has(field));
+  if (unexpected) throw syncIssue("INVALID_SYNC_PAYLOAD", [collection, index, unexpected], "FIELD_NOT_ALLOWED", row, entityType);
+}
+
+function isRow(value: unknown): value is Row {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function existingCustomRateId(rows: { rateSource: string; customRateId: string | null }[] | undefined): string | null | undefined {
@@ -828,6 +1144,14 @@ function reference(map: Map<string, string>, value: unknown): string | null {
   const localId = text(value);
   if (!localId) return null;
   return map.get(localId) ?? null;
+}
+
+/** `undefined` distingue una referencia enviada pero desconocida de `null`. */
+function nullableReference(map: Map<string, string>, value: unknown): string | null | undefined {
+  if (value === null || value === undefined) return null;
+  const localId = text(value);
+  if (!localId) return undefined;
+  return map.get(localId);
 }
 
 function text(value: unknown) {

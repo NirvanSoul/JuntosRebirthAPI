@@ -130,16 +130,50 @@ no aplica el movimiento: no se fabrican ni se persisten importes contables
 incompletos. Una tasa personalizada ajena o inexistente devuelve
 `CUSTOM_RATE_NOT_FOUND` y tampoco se aplica el batch.
 
-En espacios `VE`, cada cuenta guarda un único saldo `USD`. Si el sync trae una
-cuenta con divisas de más (un dispositivo que abre un monedero `VES` al
-registrar un cambio de divisa), el lote se acepta y la cuenta se recorta a su
-saldo `USD`: `currency` pasa a `USD` y el resto de balances se descarta, de
-modo que el dispositivo adopta la forma correcta en la siguiente bajada. Una
-cuenta sin ningún saldo `USD` sí devuelve
-`VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED` (409), porque no hay saldo que
-conservar sin inventarlo. Las rutas REST de `moneyAccounts` mantienen el
-rechazo directo: ahí el 409 es accionable y no arrastra el resto del lote. Los
-movimientos nuevos solo aceptan `USD` o `VES`.
+En espacios `VE`, cada `moneyAccount` activo del sync debe llevar
+`currency: "USD"` y exactamente un balance `USD`. Una cuenta configurada con
+otra moneda devuelve `INVALID_MONEY_ACCOUNT_CURRENCY` (400); cero balances,
+un balance no USD o más de un balance devuelve
+`VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED` (409). El servidor no recorta ni
+normaliza silenciosamente un balance VES: el lote completo se rechaza antes
+del `db.batch`. Los movimientos nuevos solo aceptan `USD` o `VES`; otra moneda
+devuelve `INVALID_TRANSACTION_CURRENCY` (400). Un histórico de otro país solo
+puede reenviarse sin cambios.
+
+El contrato de subida admite `category.budgets`, `moneyAccount.balances` y
+`transaction.customRateId`. Los importes de este endpoint se reciben como
+números enteros seguros (el cliente convierte los strings del snapshot antes
+de subirlos); enviar un string devuelve `INVALID_SYNC_PAYLOAD` con la ruta del
+campo. `category.budgetMinor` se conserva como compatibilidad para clientes
+anteriores, pero `budgets` es la representación canónica y se persiste por
+moneda.
+
+Los rechazos de validación incluyen únicamente diagnóstico seguro:
+
+```json
+{
+  "error": {
+    "code": "INVALID_TRANSACTION_CURRENCY",
+    "message": "The transaction currency is invalid.",
+    "details": {
+      "path": ["transactions", 0, "currency"],
+      "reason": "VE_ALLOWS_USD_OR_VES"
+    }
+  }
+}
+```
+
+El log estructurado asociado añade `requestId`, `userId`, `spaceId`, tipo e id
+local de entidad y contexto monetario. No registra el body, cookies, tokens,
+títulos, notas ni correos.
+
+Antes de escribir, el sync valida también campos desconocidos, IDs locales
+duplicados, fechas, booleanos, importes positivos, monedas duplicadas,
+referencias a categoría/cuenta/serie y que cualquier `remoteId` ya existente
+pertenezca al espacio de la ruta. Una colisión con otro espacio devuelve
+`ENTITY_BELONGS_TO_ANOTHER_SPACE` sin identificar el espacio ni su propietario.
+Todas estas comprobaciones ocurren antes del único `db.batch`, por lo que un
+rechazo no deja persistencia parcial.
 
 En actualizaciones, solo `amountMinor`, `currency`, `occurredOn` o un
 `customRateId` explícito regeneran el snapshot. El resto de cambios conserva la

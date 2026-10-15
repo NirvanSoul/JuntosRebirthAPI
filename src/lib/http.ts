@@ -12,6 +12,13 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
  */
 const ERROR_STATUS = {
   INVALID_REQUEST: 400,
+  INVALID_SYNC_PAYLOAD: 400,
+  INVALID_MONEY_ACCOUNT_CURRENCY: 400,
+  INVALID_TRANSACTION_CURRENCY: 400,
+  INVALID_CATEGORY_REFERENCE: 400,
+  INVALID_MONEY_ACCOUNT_REFERENCE: 400,
+  INVALID_RECURRING_SERIES_REFERENCE: 400,
+  ENTITY_BELONGS_TO_ANOTHER_SPACE: 400,
   // El cliente necesita distinguirlos para decir qué corregir: recomprimir no
   // es lo mismo que elegir otra foto.
   AVATAR_INVALID_FORMAT: 400,
@@ -60,6 +67,13 @@ export type ErrorCode = keyof typeof ERROR_STATUS;
 
 const DEFAULT_MESSAGES: Record<ErrorCode, string> = {
   INVALID_REQUEST: "Invalid request.",
+  INVALID_SYNC_PAYLOAD: "The sync payload is invalid.",
+  INVALID_MONEY_ACCOUNT_CURRENCY: "The money account currency is invalid.",
+  INVALID_TRANSACTION_CURRENCY: "The transaction currency is invalid.",
+  INVALID_CATEGORY_REFERENCE: "The category reference is invalid.",
+  INVALID_MONEY_ACCOUNT_REFERENCE: "The money account reference is invalid.",
+  INVALID_RECURRING_SERIES_REFERENCE: "The recurring series reference is invalid.",
+  ENTITY_BELONGS_TO_ANOTHER_SPACE: "The sync entity cannot be used in this space.",
   AVATAR_INVALID_FORMAT: "Avatar must be a real JPEG file.",
   AVATAR_TOO_LARGE: "Avatar is too large.",
   AVATAR_TOO_SMALL: "Avatar is too small.",

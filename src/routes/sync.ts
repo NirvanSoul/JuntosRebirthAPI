@@ -10,7 +10,7 @@ import {
   type SpaceAccessVariables,
 } from "../middleware/space-access";
 import { buildChanges, buildSnapshot } from "../services/sync-snapshot";
-import { RecurrenceOccurrenceConflictError, syncSpaceData } from "../services/space-sync";
+import { RecurrenceOccurrenceConflictError, SyncValidationError, syncSpaceData } from "../services/space-sync";
 import { findUserCountryCode } from "../services/account";
 import type { Bindings } from "../types/env";
 
@@ -22,6 +22,13 @@ const COLLECTIONS = ["categories", "moneyAccounts", "recurringSeries", "transact
 const CLIENT_ERRORS: Record<string, ErrorCode> = {
   INVALID_PAYLOAD: "INVALID_REQUEST",
   INVALID_GRAPH: "INVALID_REQUEST",
+  INVALID_SYNC_PAYLOAD: "INVALID_SYNC_PAYLOAD",
+  INVALID_MONEY_ACCOUNT_CURRENCY: "INVALID_MONEY_ACCOUNT_CURRENCY",
+  INVALID_TRANSACTION_CURRENCY: "INVALID_TRANSACTION_CURRENCY",
+  INVALID_CATEGORY_REFERENCE: "INVALID_CATEGORY_REFERENCE",
+  INVALID_MONEY_ACCOUNT_REFERENCE: "INVALID_MONEY_ACCOUNT_REFERENCE",
+  INVALID_RECURRING_SERIES_REFERENCE: "INVALID_RECURRING_SERIES_REFERENCE",
+  ENTITY_BELONGS_TO_ANOTHER_SPACE: "ENTITY_BELONGS_TO_ANOTHER_SPACE",
   CUSTOM_RATE_NOT_FOUND: "CUSTOM_RATE_NOT_FOUND",
   VENEZUELA_RATES_UNAVAILABLE: "VENEZUELA_RATES_UNAVAILABLE",
   VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED: "VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED",
@@ -99,13 +106,26 @@ export function createSpaceSyncRoute(
   route.use("*", access);
 
   route.post("/", async (c) => {
+    const requestId = safeRequestId(c.req.header("x-request-id") ?? c.req.header("cf-ray"));
     const body = await parseBody(c.req.raw, ["installationId", ...COLLECTIONS]);
     if (
       !body ||
       typeof body.installationId !== "string" ||
       COLLECTIONS.some((key) => !Array.isArray(body[key]))
     ) {
-      return errorResponse(c, "INVALID_REQUEST");
+      console.error(JSON.stringify({
+        event: "sync_validation_failure",
+        requestId,
+        userId: c.get("currentUserId"),
+        spaceId: c.req.param("spaceId"),
+        route: "POST /v1/spaces/:spaceId/sync",
+        validationIssuePath: [],
+        validationIssueCode: "INVALID_SYNC_PAYLOAD",
+        validationIssueReason: "MALFORMED_SYNC_BODY",
+      }));
+      return errorResponse(c, "INVALID_SYNC_PAYLOAD", undefined, {
+        details: { path: [], reason: "MALFORMED_SYNC_BODY" },
+      });
     }
 
     try {
@@ -120,6 +140,25 @@ export function createSpaceSyncRoute(
       );
       return c.json({ data: result });
     } catch (error: any) {
+      if (error instanceof SyncValidationError) {
+        console.error(JSON.stringify({
+          event: "sync_validation_failure",
+          requestId,
+          userId: c.get("currentUserId"),
+          spaceId: c.req.param("spaceId"),
+          route: "POST /v1/spaces/:spaceId/sync",
+          validationIssuePath: error.issue.path,
+          validationIssueCode: error.apiCode,
+          validationIssueReason: error.issue.reason,
+          entityType: error.issue.entityType,
+          localEntityId: error.issue.localEntityId,
+          countryCode: error.issue.countryCode,
+          canonicalCurrency: error.issue.canonicalCurrency,
+        }));
+        return errorResponse(c, error.apiCode, undefined, {
+          details: { path: error.issue.path, reason: error.issue.reason },
+        });
+      }
       logDatabaseFailure("sync.space", error);
       console.error(
         "Space sync failed:",
@@ -153,4 +192,8 @@ export function createSpaceSyncRoute(
   });
 
   return route;
+}
+
+function safeRequestId(value: string | undefined): string {
+  return value && /^[A-Za-z0-9._:-]{1,128}$/.test(value) ? value : crypto.randomUUID();
 }

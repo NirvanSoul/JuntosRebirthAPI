@@ -8,10 +8,7 @@ const NOW = "2026-08-29T10:00:00.000Z";
 
 type Captured = { table: string; op: "insert" | "delete"; values?: Record<string, unknown> };
 
-/**
- * Doble del driver. Las lecturas responden en el orden del servicio: espacio,
- * categorías, cuentas, series, movimientos y alias de categoría ya existentes.
- */
+/** Doble del driver que responde por tabla para tolerar preflight en paralelo. */
 function fakeDatabase(existing: {
   countryCode?: string | null;
   categories?: unknown[];
@@ -19,24 +16,29 @@ function fakeDatabase(existing: {
   series?: unknown[];
   transactions?: unknown[];
   categoryAliases?: unknown[];
+  transactionAliases?: unknown[];
+  referenceRates?: unknown[];
 } = {}) {
   const captured: Captured[] = [];
   const batch = vi.fn().mockResolvedValue([]);
-  let selectCall = 0;
-
-  const reads: unknown[][] = [
-    [{ currency: "EUR", countryCode: existing.countryCode ?? null }],
-    existing.categories ?? [],
-    existing.moneyAccounts ?? [],
-    existing.series ?? [],
-    existing.transactions ?? [],
-    existing.categoryAliases ?? [],
-  ];
 
   const db = {
-    select: () => ({
-      from: () => {
-        const rows = reads[selectCall++] ?? [];
+    select: (selection?: Record<string, unknown>) => ({
+      from: (table: Parameters<typeof getTableName>[0]) => {
+        const tableName = getTableName(table);
+        let rows: unknown[];
+        if (tableName === "spaces") rows = [{ currency: "EUR", countryCode: existing.countryCode ?? null }];
+        else if (tableName === "categories") rows = existing.categories ?? [];
+        else if (tableName === "money_accounts") rows = existing.moneyAccounts ?? [];
+        else if (tableName === "recurring_transaction_series") rows = existing.series ?? [];
+        else if (tableName === "transactions") rows = existing.transactions ?? [];
+        else if (tableName === "category_aliases") rows = existing.categoryAliases ?? [];
+        else if (tableName === "transaction_aliases") rows = existing.transactionAliases ?? [];
+        else if (tableName === "transaction_reference_rates") rows = existing.referenceRates ?? [];
+        else rows = [];
+        if (selection && "spaceId" in selection && tableName !== "spaces") {
+          rows = rows.map((row) => ({ ...(row as Record<string, unknown>), spaceId: (row as Record<string, unknown>).spaceId ?? SPACE }));
+        }
         const result = Promise.resolve(rows);
         return Object.assign(result, {
           where: () =>
@@ -239,6 +241,25 @@ describe("space bulk sync", () => {
     expect(balanceOps[2]?.values?.openingBalanceMinor).toBe(-2500n);
   });
 
+  it("persists the canonical category budgets array", async () => {
+    const { db, captured } = fakeDatabase();
+
+    await syncSpaceData(db, SPACE, "user-1", payload({
+      categories: [category({
+        budgetMinor: null,
+        budgets: [
+          { currency: "EUR", budgetAmountMinor: 30000 },
+          { currency: "USD", budgetAmountMinor: 25000 },
+        ],
+      })],
+    }));
+
+    expect(rowsFor(captured, "category_budgets").map((entry) => entry.values)).toEqual([
+      expect.objectContaining({ currency: "EUR", budgetAmountMinor: 30000n, createdBy: "user-1" }),
+      expect.objectContaining({ currency: "USD", budgetAmountMinor: 25000n, createdBy: "user-1" }),
+    ]);
+  });
+
   it("stores the note and the custom recurrence group of a transaction", async () => {
     const { db, captured } = fakeDatabase();
 
@@ -381,12 +402,15 @@ describe("space bulk sync", () => {
         type: "expense", amountMinor: 1300, currency: "EUR", title: "Histórico",
         occurredOn: "2026-08-20", isArchived: false, createdAt: NOW, updatedAt: NOW,
       }],
-    }))).rejects.toThrow("INVALID_PAYLOAD");
+    }))).rejects.toMatchObject({
+      apiCode: "INVALID_TRANSACTION_CURRENCY",
+      issue: { path: ["transactions", 0, "currency"], reason: "VE_ALLOWS_USD_OR_VES" },
+    });
     expect(batch).not.toHaveBeenCalled();
   });
 
-  it("recorta el monedero VES sobrante de una cuenta VE en lugar de bloquear el lote", async () => {
-    const { db, captured } = fakeDatabase({ countryCode: "VE" });
+  it("rejects a second VES balance in a VE account without writing the batch", async () => {
+    const { db, batch } = fakeDatabase({ countryCode: "VE" });
 
     await expect(syncSpaceData(db, SPACE, "user-1", payload({
       moneyAccounts: [{
@@ -398,12 +422,11 @@ describe("space bulk sync", () => {
           { currency: "VES", openingBalanceMinor: 250000, position: 1 },
         ],
       }],
-    }))).resolves.toMatchObject({ moneyAccountCount: 1 });
-
-    expect(rowsFor(captured, "money_accounts")[0]?.values).toMatchObject({ primaryCurrency: "USD" });
-    expect(rowsFor(captured, "money_account_balances").map((row) => row.values)).toEqual([
-      expect.objectContaining({ currency: "USD", openingBalanceMinor: 100000n, displayOrder: 0 }),
-    ]);
+    }))).rejects.toMatchObject({
+      apiCode: "VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED",
+      issue: { path: ["moneyAccounts", 0, "balances"], reason: "VE_REQUIRES_SINGLE_USD_BALANCE" },
+    });
+    expect(batch).not.toHaveBeenCalled();
   });
 
   it("rechaza una cuenta VE sin ancla en USD", async () => {
@@ -420,11 +443,48 @@ describe("space bulk sync", () => {
     expect(batch).not.toHaveBeenCalled();
   });
 
+  it("rejects a VE account configured as VES even if its sole balance is USD", async () => {
+    const { db, batch } = fakeDatabase({ countryCode: "VE" });
+
+    await expect(syncSpaceData(db, SPACE, "user-1", payload({
+      moneyAccounts: [{
+        id: "account-local", remoteId: "account-local", name: "Banesco", kind: "bank",
+        icon: null, colorToken: null, currency: "VES", isArchived: false,
+        createdAt: NOW, updatedAt: NOW,
+        balances: [{ currency: "USD", openingBalanceMinor: 0, position: 0 }],
+      }],
+    }))).rejects.toMatchObject({
+      apiCode: "INVALID_MONEY_ACCOUNT_CURRENCY",
+      issue: { path: ["moneyAccounts", 0, "currency"], reason: "VE_REQUIRES_USD_ACCOUNT" },
+    });
+    expect(batch).not.toHaveBeenCalled();
+  });
+
+  it("keeps numeric minor amounts as the sync contract and diagnoses strings", async () => {
+    const { db, batch } = fakeDatabase();
+
+    await expect(syncSpaceData(db, SPACE, "user-1", payload({
+      moneyAccounts: [{
+        id: "account-local", remoteId: "account-local", name: "Caja", kind: "cash",
+        icon: null, colorToken: null, currency: "EUR", isArchived: false,
+        createdAt: NOW, updatedAt: NOW,
+        balances: [{ currency: "EUR", openingBalanceMinor: "100", position: 0 }],
+      }],
+    }))).rejects.toMatchObject({
+      apiCode: "INVALID_SYNC_PAYLOAD",
+      issue: {
+        path: ["moneyAccounts", 0, "balances", 0, "openingBalanceMinor"],
+        reason: "EXPECTED_SAFE_INTEGER_NUMBER",
+      },
+    });
+    expect(batch).not.toHaveBeenCalled();
+  });
+
   it("rejects client-supplied snapshot values before writing the batch", async () => {
     const { db, batch } = fakeDatabase();
     await expect(syncSpaceData(db, SPACE, "user-1", payload({
       transactions: [{ id: "local-1", exchangeSnapshot: { rate: "50" } }],
-    }))).rejects.toThrow("INVALID_PAYLOAD");
+    }))).rejects.toThrow("INVALID_SYNC_PAYLOAD");
     expect(batch).not.toHaveBeenCalled();
   });
 
@@ -499,7 +559,86 @@ describe("space bulk sync", () => {
           ],
         }),
       ),
-    ).rejects.toThrow("INVALID_GRAPH");
+    ).rejects.toMatchObject({
+      apiCode: "INVALID_CATEGORY_REFERENCE",
+      issue: { path: ["transactions", 0, "categoryId"], reason: "REFERENCE_NOT_FOUND" },
+    });
+  });
+
+  it("rejects a transaction whose non-null money account cannot be resolved", async () => {
+    const { db, batch } = fakeDatabase();
+
+    await expect(syncSpaceData(db, SPACE, "user-1", payload({
+      categories: [category()],
+      transactions: [{
+        ...recurringTransaction(),
+        recurrence: "once",
+        recurrenceSeriesId: null,
+        moneyAccountId: "missing-account",
+      }],
+    }))).rejects.toMatchObject({
+      apiCode: "INVALID_MONEY_ACCOUNT_REFERENCE",
+      issue: { path: ["transactions", 0, "moneyAccountId"], reason: "REFERENCE_NOT_FOUND" },
+    });
+    expect(batch).not.toHaveBeenCalled();
+  });
+
+  it("rejects duplicate local ids before reading or writing entity rows", async () => {
+    const { db, batch } = fakeDatabase();
+    await expect(syncSpaceData(db, SPACE, "user-1", payload({
+      categories: [category(), category({ name: "Duplicada" })],
+    }))).rejects.toMatchObject({
+      apiCode: "INVALID_SYNC_PAYLOAD",
+      issue: { path: ["categories", 1, "id"], reason: "DUPLICATE_LOCAL_ID" },
+    });
+    expect(batch).not.toHaveBeenCalled();
+  });
+
+  it("rejects a remote id already owned by another space without exposing that space", async () => {
+    const foreignRemoteId = "99999999-9999-4999-8999-999999999999";
+    const { db, batch } = fakeDatabase({
+      categories: [{
+        id: foreignRemoteId,
+        spaceId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        sourceInstallationId: "other-installation",
+        sourceLocalId: "other-local-id",
+      }],
+    });
+
+    await expect(syncSpaceData(db, SPACE, "user-1", payload({
+      categories: [category({ id: "local-new", remoteId: foreignRemoteId })],
+    }))).rejects.toMatchObject({
+      apiCode: "ENTITY_BELONGS_TO_ANOTHER_SPACE",
+      issue: {
+        path: ["categories", 0, "remoteId"],
+        reason: "REMOTE_ID_NOT_AVAILABLE_IN_SPACE",
+      },
+    });
+    expect(batch).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unresolved recurrence series instead of silently removing it", async () => {
+    const { db, batch } = fakeDatabase();
+
+    await expect(syncSpaceData(db, SPACE, "user-1", payload({
+      categories: [category()],
+      transactions: [recurringTransaction({ recurrenceSeriesId: "missing-series" })],
+    }))).rejects.toMatchObject({
+      apiCode: "INVALID_RECURRING_SERIES_REFERENCE",
+      issue: { path: ["transactions", 0, "recurrenceSeriesId"], reason: "REFERENCE_NOT_FOUND" },
+    });
+    expect(batch).not.toHaveBeenCalled();
+  });
+
+  it("rejects non-positive transaction amounts instead of coercing them to one", async () => {
+    const { db, batch } = fakeDatabase();
+    await expect(syncSpaceData(db, SPACE, "user-1", payload({
+      transactions: [recurringTransaction({ amountMinor: 0, recurrenceSeriesId: null })],
+    }))).rejects.toMatchObject({
+      apiCode: "INVALID_SYNC_PAYLOAD",
+      issue: { path: ["transactions", 0, "amountMinor"], reason: "MUST_BE_POSITIVE" },
+    });
+    expect(batch).not.toHaveBeenCalled();
   });
 
   it("rejects a transaction whose category cannot be resolved even when other categories already exist", async () => {
@@ -540,7 +679,7 @@ describe("space bulk sync", () => {
           ],
         }),
       ),
-    ).rejects.toThrow("INVALID_GRAPH");
+    ).rejects.toThrow("INVALID_CATEGORY_REFERENCE");
   });
 
   it("resolves a transaction's category through a previously recorded alias, without the category traveling in this batch", async () => {
@@ -746,6 +885,7 @@ describe("space bulk sync", () => {
             colorToken: "green",
             currency: "EUR",
             createdBy: "author-user-acc",
+            balances: [{ currency: "EUR", openingBalanceMinor: 0, position: 0 }],
             isArchived: false,
             createdAt: NOW,
             updatedAt: NOW,

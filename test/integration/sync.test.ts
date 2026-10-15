@@ -89,11 +89,11 @@ function transactionRow(overrides: Record<string, unknown> = {}) {
 }
 
 describe("space bulk sync against PostgreSQL", () => {
-  it("trims a Venezuela account to its USD balance instead of rejecting the batch", async () => {
+  it("rejects a Venezuela account with more than one balance atomically", async () => {
     const { userId, spaceId } = await sharedSpace("sync-ve-account", "VE");
 
-    // Un dispositivo que registró un cambio de divisa abre un monedero VES de
-    // más. El lote entra igual y el espacio conserva su único saldo USD.
+    // Un monedero VES adicional no se normaliza silenciosamente: el cliente
+    // recibe la ruta exacta y ninguna categoría del mismo lote se persiste.
     await expect(syncSpaceData(db, spaceId, userId, {
       installationId: "install-ve",
       categories: [categoryRow()], recurringSeries: [], transactions: [],
@@ -104,14 +104,14 @@ describe("space bulk sync against PostgreSQL", () => {
           { currency: "VES", openingBalanceMinor: 0, position: 1 },
         ],
       })],
-    })).resolves.toMatchObject({ categoryCount: 1, moneyAccountCount: 1 });
+    })).rejects.toMatchObject({
+      apiCode: "VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED",
+      issue: { path: ["moneyAccounts", 0, "balances"] },
+    });
 
     const snapshot = await buildSnapshot(db, userId);
-    const account = snapshot.moneyAccounts.find((item) => item.spaceId === spaceId);
-    expect(account?.primaryCurrency).toBe("USD");
-    expect(account?.balances).toEqual([
-      expect.objectContaining({ currency: "USD", openingBalanceMinor: "100000" }),
-    ]);
+    expect(snapshot.moneyAccounts.find((item) => item.spaceId === spaceId)).toBeUndefined();
+    expect(snapshot.categories.find((item) => item.spaceId === spaceId)).toBeUndefined();
 
     // Sin ancla en USD no hay cuenta que representar: eso sigue siendo un 409.
     await expect(syncSpaceData(db, spaceId, userId, {
@@ -152,6 +152,31 @@ describe("space bulk sync against PostgreSQL", () => {
       .where(eq(transactions.spaceId, spaceId));
     expect(storedTransactions).toHaveLength(1);
     expect(storedTransactions[0]?.note).toBe("Con Ana");
+  });
+
+  it("rejects a remote category id owned by another space", async () => {
+    const first = await sharedSpace("sync-owner-a");
+    const second = await sharedSpace("sync-owner-b");
+    await syncSpaceData(db, first.spaceId, first.userId, {
+      installationId: "install-a",
+      categories: [categoryRow()], moneyAccounts: [], recurringSeries: [], transactions: [],
+    });
+    const foreign = (await buildSnapshot(db, first.userId)).categories.find(
+      (item) => item.spaceId === first.spaceId,
+    )!;
+
+    await expect(syncSpaceData(db, second.spaceId, second.userId, {
+      installationId: "install-b",
+      categories: [categoryRow({ id: "local-b", remoteId: foreign.id })],
+      moneyAccounts: [], recurringSeries: [], transactions: [],
+    })).rejects.toMatchObject({
+      apiCode: "ENTITY_BELONGS_TO_ANOTHER_SPACE",
+      issue: { path: ["categories", 0, "remoteId"] },
+    });
+
+    expect((await buildSnapshot(db, second.userId)).categories.find(
+      (item) => item.spaceId === second.spaceId,
+    )).toBeUndefined();
   });
 
   it("keeps the newest version and refuses an older one", async () => {
