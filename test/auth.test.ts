@@ -203,9 +203,14 @@ describe("Private API authorization", () => {
 });
 
 describe("Better Auth error contract", () => {
-  async function normalize(status: number, payload: unknown, headers?: HeadersInit) {
+  async function normalize(
+    status: number,
+    payload: unknown,
+    headers?: HeadersInit,
+    path = "/auth",
+  ) {
     const testApp = new Hono();
-    testApp.get("/auth", (c) =>
+    testApp.get(path, (c) =>
       normalizeAuthErrorResponse(
         c,
         new Response(JSON.stringify(payload), {
@@ -214,8 +219,12 @@ describe("Better Auth error contract", () => {
         }),
       ),
     );
-    return testApp.request("/auth");
+    return testApp.request(path);
   }
+
+  const SOCIAL_PATH = "/api/auth/sign-in/social";
+  const normalizeSocial = (status: number, payload: unknown) =>
+    normalize(status, payload, undefined, SOCIAL_PATH);
 
   it("normalizes OTP failures to the public error envelope", async () => {
     const response = await normalize(400, { code: "OTP_EXPIRED", message: "provider detail" });
@@ -269,6 +278,133 @@ describe("Better Auth error contract", () => {
         message: "Too many attempts. Try again later.",
         lockedUntil: "2026-09-01T12:00:00.000Z",
       },
+    });
+  });
+
+  describe("Google sign-in", () => {
+    it("separates a rejected ID token from a missing session", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const response = await normalizeSocial(401, {
+          code: "INVALID_TOKEN",
+          message: "Invalid token",
+        });
+
+        expect(response.status).toBe(401);
+        await expect(response.json()).resolves.toEqual({
+          error: { code: "INVALID_SOCIAL_TOKEN", message: "The sign-in token was rejected." },
+        });
+        expect(JSON.parse(warn.mock.calls[0][0] as string)).toEqual({
+          event: "auth_social_sign_in_failed",
+          status: 401,
+          upstreamCode: "INVALID_TOKEN",
+          linkReason: null,
+          code: "INVALID_SOCIAL_TOKEN",
+        });
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it("keeps INVALID_TOKEN generic outside social sign-in", async () => {
+      const response = await normalize(400, { code: "INVALID_TOKEN" });
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { code: "INVALID_REQUEST" },
+      });
+    });
+
+    it("reports an unverified local account without linking it", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const response = await normalizeSocial(401, {
+          code: "OAUTH_LINK_ERROR",
+          message: "account not linked",
+        });
+
+        expect(response.status).toBe(409);
+        await expect(response.json()).resolves.toEqual({
+          error: {
+            code: "SOCIAL_ACCOUNT_NOT_LINKED",
+            message: "Sign in with your email to continue.",
+          },
+        });
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it("hides internal link failures and never logs unknown provider text", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const internal = await normalizeSocial(401, {
+          code: "OAUTH_LINK_ERROR",
+          message: "unable to create user",
+        });
+        const unknown = await normalizeSocial(401, {
+          code: "OAUTH_LINK_ERROR",
+          message: "person@example.com is blocked",
+        });
+
+        expect(internal.status).toBe(500);
+        await expect(internal.json()).resolves.toEqual({
+          error: { code: "SOCIAL_SIGN_IN_FAILED", message: "Sign-in could not be completed." },
+        });
+        expect(JSON.parse(warn.mock.calls[0][0] as string).linkReason).toBe(
+          "unable to create user",
+        );
+        await expect(unknown.json()).resolves.toMatchObject({
+          error: { code: "SOCIAL_SIGN_IN_FAILED" },
+        });
+        expect(warn.mock.calls[1][0]).not.toContain("example.com");
+        expect(JSON.parse(warn.mock.calls[1][0] as string).linkReason).toBe("other");
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it("reports a profile without email as unavailable", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const response = await normalizeSocial(401, { code: "USER_EMAIL_NOT_FOUND" });
+
+        expect(response.status).toBe(401);
+        await expect(response.json()).resolves.toMatchObject({
+          error: { code: "SOCIAL_PROFILE_UNAVAILABLE" },
+        });
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it("rejects a malformed Google ID token end to end", async () => {
+      const fetchMock = vi
+        .spyOn(globalThis, "fetch")
+        .mockRejectedValue(new Error("blocked network request"));
+      const quiet = (["warn", "error", "log"] as const).map((level) =>
+        vi.spyOn(console, level).mockImplementation(() => {}),
+      );
+      try {
+        const res = await app.request(
+          "/api/auth/sign-in/social",
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ provider: "google", idToken: { token: "not-a-jwt" } }),
+          },
+          mockEnv,
+        );
+
+        expect(res.status).toBe(401);
+        await expect(res.json()).resolves.toMatchObject({
+          error: { code: "INVALID_SOCIAL_TOKEN" },
+        });
+        expect(res.headers.get("set-cookie")).toBeNull();
+      } finally {
+        fetchMock.mockRestore();
+        quiet.forEach((spy) => spy.mockRestore());
+      }
     });
   });
 });
