@@ -259,3 +259,69 @@ describe("merchant feedback against PostgreSQL", () => {
     ).rejects.toThrow("IMPORT_ITEM_NOT_FOUND");
   });
 });
+
+describe("merchant feedback aggregates stay exact", () => {
+  async function voterFor(label: string, merchant: string) {
+    const { userId, spaceId, categoryId } = await workspace(label);
+    await syncImportBatches(db, userId, {
+      installationId: "install-A",
+      batches: [batchRow(spaceId)],
+      items: [itemRow(categoryId, { normalized_merchant: merchant })],
+    });
+    const [item] = await db
+      .select({ id: importItems.id })
+      .from(importItems)
+      .innerJoin(importBatches, eq(importItems.batchId, importBatches.id))
+      .where(and(eq(importBatches.userId, userId), eq(importItems.sourceLocalId, "local-item-1")));
+    return { userId, itemId: item!.id };
+  }
+
+  async function aggregatesOf(merchant: string) {
+    const rows = await db
+      .select({ key: merchantFeedbackAggregates.canonicalCategoryKey, users: merchantFeedbackAggregates.uniqueUsers, total: merchantFeedbackAggregates.totalConfirmations })
+      .from(merchantFeedbackAggregates)
+      .where(eq(merchantFeedbackAggregates.normalizedMerchant, merchant));
+    return Object.fromEntries(rows.map((row) => [row.key, { users: row.users, total: row.total }]));
+  }
+
+  it("drops the old key when its last voter changes their mind", async () => {
+    const merchant = `itest-merchant-switch-${crypto.randomUUID()}`;
+    const voter = await voterFor("imp-fb-switch", merchant);
+
+    await recordMerchantFeedback(db, voter.userId, { importItemId: voter.itemId, canonicalCategoryKey: "groceries" });
+    await recordMerchantFeedback(db, voter.userId, { importItemId: voter.itemId, canonicalCategoryKey: "restaurants" });
+
+    expect(await aggregatesOf(merchant)).toEqual({ restaurants: { users: 1, total: 2 } });
+  });
+
+  it("counts every voter when several vote for the same merchant at once", async () => {
+    const merchant = `itest-merchant-race-${crypto.randomUUID()}`;
+    const voters = await Promise.all(Array.from({ length: 6 }, (_, index) => voterFor(`imp-fb-race-${index}`, merchant)));
+
+    await Promise.all(voters.map((voter) => recordMerchantFeedback(db, voter.userId, { importItemId: voter.itemId, canonicalCategoryKey: "groceries" })));
+
+    expect(await aggregatesOf(merchant)).toEqual({ groceries: { users: 6, total: 6 } });
+  });
+});
+
+describe("import batches never attach to someone else's batch", () => {
+  it("refuses a batch id that already belongs to another user", async () => {
+    const owner = await workspace("imp-batch-owner");
+    const intruder = await workspace("imp-batch-intruder");
+    const sharedId = crypto.randomUUID();
+    await syncImportBatches(db, owner.userId, {
+      installationId: "install-A",
+      batches: [batchRow(owner.spaceId, { id: sharedId })],
+      items: [itemRow(owner.categoryId, { batch_id: sharedId })],
+    });
+
+    await expect(syncImportBatches(db, intruder.userId, {
+      installationId: "install-B",
+      batches: [batchRow(intruder.spaceId, { id: sharedId, updated_at: LATER })],
+      items: [itemRow(intruder.categoryId, { id: "intruder-item", batch_id: sharedId, updated_at: LATER })],
+    })).rejects.toThrow();
+
+    const items = await db.select({ sourceLocalId: importItems.sourceLocalId }).from(importItems).where(eq(importItems.batchId, sharedId));
+    expect(items.map((item) => item.sourceLocalId)).toEqual(["local-item-1"]);
+  });
+});

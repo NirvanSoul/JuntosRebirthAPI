@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { logFailure } from "../lib/log";
 import { createDb } from "../db/client";
 import { errorResponse } from "../lib/http";
 import { parseBody } from "../lib/validation";
@@ -41,7 +42,7 @@ export function createPushTokensRoute(deps: Deps = defaults) {
       });
       return c.json({ data: { registered: true } }, 201);
     } catch (error) {
-      console.error("Push token registration failed:", error);
+      logFailure("push_token_registration", error);
       return errorResponse(c, "INTERNAL_SERVER_ERROR");
     }
   });
@@ -60,7 +61,7 @@ export function createPushTokensRoute(deps: Deps = defaults) {
       );
       return c.body(null, 204);
     } catch (error) {
-      console.error("Push token removal failed:", error);
+      logFailure("push_token_removal", error);
       return errorResponse(c, "INTERNAL_SERVER_ERROR");
     }
   });

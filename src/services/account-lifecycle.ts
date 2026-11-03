@@ -91,8 +91,41 @@ export async function exportAccount(db: Database, userId: string): Promise<Accou
  * historial de la pareja. Todo lo que cuelga del usuario (perfil, membresías,
  * invitaciones, consentimientos, lotes de migración) cae por `ON DELETE CASCADE`.
  */
+/**
+ * Antes de que la persona desaparezca de sus espacios compartidos: si era su
+ * único propietario, la propiedad pasa a quien sigue (admin primero, luego el
+ * miembro más antiguo), con la misma regla que `leave_incompatible_shared_spaces`.
+ * Sin esto la pareja se quedaba como `member` de un espacio sin propietario,
+ * sin poder invitar ni gestionarlo. Las filas de esos espacios se bloquean
+ * como en los cambios de miembros, para no decidir sobre una foto vieja.
+ */
+function handOverOwnership(db: Database, userId: string) {
+  return [
+    db.execute(sql`
+      SELECT 1 FROM spaces
+       WHERE id IN (SELECT space_id FROM space_members WHERE user_id = ${userId} AND status = 'active')
+       ORDER BY id
+       FOR NO KEY UPDATE`),
+    db.execute(sql`
+      UPDATE space_members SET role = 'owner', updated_at = now()
+       WHERE id IN (
+         SELECT DISTINCT ON (candidate.space_id) candidate.id
+           FROM space_members candidate
+          WHERE candidate.space_id IN (
+                  SELECT space_id FROM space_members
+                   WHERE user_id = ${userId} AND status = 'active' AND role = 'owner')
+            AND candidate.user_id <> ${userId}
+            AND candidate.status = 'active'
+            AND NOT EXISTS (
+                  SELECT 1 FROM space_members other
+                   WHERE other.space_id = candidate.space_id AND other.user_id <> ${userId}
+                     AND other.status = 'active' AND other.role = 'owner')
+          ORDER BY candidate.space_id, (candidate.role = 'admin') DESC, candidate.joined_at, candidate.id)`),
+  ] as const;
+}
+
 export async function deleteAccount(db: Database, userId: string): Promise<void> {
-  await db.execute(sql`
+  await db.batch([...handOverOwnership(db, userId), db.execute(sql`
     WITH memberships AS (
       SELECT space_id FROM space_members WHERE user_id = ${userId} AND status = 'active'
     ), abandoned AS (
@@ -113,7 +146,7 @@ export async function deleteAccount(db: Database, userId: string): Promise<void>
       DELETE FROM spaces WHERE id IN (SELECT space_id FROM abandoned) RETURNING id
     )
     DELETE FROM "user" WHERE id = ${userId}
-  `);
+  `)]);
 }
 
 /**
@@ -124,7 +157,7 @@ export async function deleteAccount(db: Database, userId: string): Promise<void>
  * inicio de sesión.
  */
 export async function deleteAccountData(db: Database, userId: string): Promise<void> {
-  await db.execute(sql`
+  await db.batch([...handOverOwnership(db, userId), db.execute(sql`
     WITH memberships AS (
       SELECT space_id FROM space_members WHERE user_id = ${userId}
     ), abandoned AS (
@@ -187,5 +220,5 @@ export async function deleteAccountData(db: Database, userId: string): Promise<v
       RETURNING id
     )
     DELETE FROM user_push_tokens WHERE user_id = ${userId}
-  `);
+  `)]);
 }

@@ -232,6 +232,20 @@
       "when": 1788368400000,
       "tag": "0032_sync_polling_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1788372000000,
+      "tag": "0033_category_budget_periods",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1788375600000,
+      "tag": "0034_category_budget_history",
+      "breakpoints": true
     }
   ]
 }

@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { logFailure } from "../lib/log";
 import { createDb } from "../db/client";
 import { errorResponse, type ErrorCode } from "../lib/http";
 import type { AuthVariables } from "../middleware/auth";
@@ -80,7 +81,7 @@ export function createAvatarsRoute(deps: Deps = defaults) {
       );
       return c.json({ data: { avatar } });
     } catch (error) {
-      console.error("Avatar upload failed:", error);
+      logFailure("avatar_upload", error);
       return errorResponse(c, "INTERNAL_SERVER_ERROR");
     }
   });
@@ -96,7 +97,7 @@ export function createAvatarsRoute(deps: Deps = defaults) {
       );
       return c.body(null, 204);
     } catch (error) {
-      console.error("Avatar delete failed:", error);
+      logFailure("avatar_delete", error);
       return errorResponse(c, "INTERNAL_SERVER_ERROR");
     }
   });
@@ -124,7 +125,7 @@ export function createAvatarsRoute(deps: Deps = defaults) {
         },
       });
     } catch (error) {
-      console.error("Avatar read failed:", error);
+      logFailure("avatar_read", error);
       return errorResponse(c, "INTERNAL_SERVER_ERROR");
     }
   });

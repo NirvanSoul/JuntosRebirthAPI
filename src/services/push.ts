@@ -1,4 +1,5 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
+import { logFailure } from "../lib/log";
 import type { Database } from "../db/client";
 import { spaceMembers, userPushTokens } from "../db/schema";
 
@@ -117,7 +118,7 @@ export async function sendPush(
       ),
     });
   } catch (error) {
-    console.error("Expo push request failed:", error);
+    logFailure("expo_push_request", error);
     return { delivered: 0, removed: 0 };
   }
 

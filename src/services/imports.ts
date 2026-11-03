@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import type { Database } from "../db/client";
 import {
   importBatches,
@@ -71,6 +71,17 @@ export async function syncImportBatches(
       batchIdByLocalId.set(localId, UUID.test(localId) ? localId : crypto.randomUUID());
     }
   }
+
+  // El id del lote lo propone el cliente. Si ya es de otra persona, el upsert
+  // del lote se descartaba en silencio (su `setWhere` exige el mismo usuario)
+  // pero los items se colgaban igualmente de ese lote ajeno.
+  const proposedIds = [...new Set(payload.batches.map((batch) => batchIdByLocalId.get(text(batch.id))!))];
+  const foreign = await db
+    .select({ id: importBatches.id })
+    .from(importBatches)
+    .where(and(inArray(importBatches.id, proposedIds), ne(importBatches.userId, userId)))
+    .limit(1);
+  if (foreign.length > 0) throw new Error("INVALID_GRAPH");
 
   const writes: unknown[] = [];
 
@@ -275,10 +286,16 @@ export async function recordMerchantFeedback(
     .limit(1);
   const countryCode = countryFromLocale(profile?.locale);
 
-  // Dos sentencias dentro de un `db.batch`, que el driver ejecuta como
+  // Sentencias dentro de un `db.batch`, que el driver ejecuta como
   // transacción. En un solo CTE no serviría: los CTE comparten instantánea, así
   // que el recuento habría leído el voto anterior en vez del recién escrito.
+  //
+  // El bloqueo por comercio va primero: en READ COMMITTED dos votos
+  // simultáneos no veían el voto sin confirmar del otro y el último en
+  // confirmar dejaba un recuento que omitía al primero (6 votos → 1). Con el
+  // bloqueo, el segundo espera y sus sentencias ven el voto ya confirmado.
   await db.batch([
+    db.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`juntos.merchant-feedback:${countryCode}:${item.normalizedMerchant}`}, 0))`),
     db.execute(sql`
       INSERT INTO merchant_feedback_votes
         (user_id, country_code, normalized_merchant, canonical_category_key, confirmations)
@@ -287,6 +304,16 @@ export async function recordMerchantFeedback(
         canonical_category_key = EXCLUDED.canonical_category_key,
         confirmations = merchant_feedback_votes.confirmations + 1,
         updated_at = now()
+    `),
+    // Una clave que se queda sin votos (su último votante cambió de opinión)
+    // no sale en el recálculo de abajo: se borra aquí.
+    db.execute(sql`
+      DELETE FROM merchant_feedback_aggregates a
+       WHERE a.country_code = ${countryCode} AND a.normalized_merchant = ${item.normalizedMerchant}
+         AND NOT EXISTS (
+           SELECT 1 FROM merchant_feedback_votes v
+            WHERE v.country_code = a.country_code AND v.normalized_merchant = a.normalized_merchant
+              AND v.canonical_category_key = a.canonical_category_key)
     `),
     // Se recalculan todas las claves de ese comercio, no solo la votada: si
     // alguien cambia de opinión, la fila de la clave anterior también se corrige.

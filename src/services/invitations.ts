@@ -141,26 +141,30 @@ export async function revokeInvitation(db: Database, spaceId: string, invitation
  * elimina el espacio huérfano para no bloquear la creación de nuevos espacios.
  */
 export async function expireStaleInvitations(db: Database): Promise<number> {
-  const rows = await db
-    .update(spaceInvitations)
-    .set({ status: "expired", updatedAt: new Date() })
-    .where(and(eq(spaceInvitations.status, "pending"), lte(spaceInvitations.expiresAt, new Date())))
-    .returning({ id: spaceInvitations.id });
-
-  if (rows.length > 0) {
-    await db.execute(sql`
+  // Solo se borran los espacios cuyas invitaciones caducan en este barrido.
+  // Antes se borraba cualquier espacio de pareja no activado sin invitación
+  // pendiente, incluido uno recién creado cuyo segundo paso (invitar) aún no
+  // había llegado. Una sola sentencia: no hay hueco entre caducar y borrar.
+  const result = await db.execute<{ expired: number }>(sql`
+    WITH expired AS (
+      UPDATE space_invitations SET status = 'expired', updated_at = now()
+       WHERE status = 'pending' AND expires_at <= now()
+      RETURNING space_id
+    ), orphaned AS (
       DELETE FROM spaces
-      WHERE type = 'couple'
-        AND activated_at IS NULL
-        AND NOT EXISTS (
-          SELECT 1 FROM space_invitations
-          WHERE space_invitations.space_id = spaces.id
-            AND space_invitations.status = 'pending'
-        )
-    `);
-  }
-
-  return rows.length;
+       WHERE id IN (SELECT space_id FROM expired)
+         AND type = 'couple'
+         AND activated_at IS NULL
+         -- La instantánea aún ve como pendientes las que este barrido caduca.
+         AND NOT EXISTS (
+           SELECT 1 FROM space_invitations i
+            WHERE i.space_id = spaces.id AND i.status = 'pending' AND i.expires_at > now())
+      RETURNING id
+    )
+    SELECT (SELECT count(*) FROM expired)::int AS expired
+  `);
+  const row = (result.rows ?? result)[0] as { expired: number } | undefined;
+  return Number(row?.expired ?? 0);
 }
 
 /** El barrido corre por cron; entre pasadas la fecha manda sobre el estado guardado. */

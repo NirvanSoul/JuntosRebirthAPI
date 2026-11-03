@@ -77,7 +77,16 @@ describe("account snapshot", () => {
       [{ id: "space-1", name: "Personal", type: "personal", currency: "EUR", timezone: "UTC", role: "owner", activatedAt: NOW, createdAt: NOW, updatedAt: NOW }],
       [{ spaceId: "space-1", userId: "user-1", displayName: "Ana", image: null, avatarPath: "user-1/avatar.jpg", avatarUpdatedAt: NOW }],
       [{ id: "cat-1", spaceId: "space-1", name: "Ocio", icon: null, colorToken: null, createdBy: "user-author-cat", isDefault: false, templateKey: null, isArchived: false, createdAt: NOW, updatedAt: NOW, archivedAt: null }],
-      [{ categoryId: "cat-1", currency: "EUR", budgetAmountMinor: 25000n }],
+      [{
+        categoryId: "cat-1",
+        currency: "EUR",
+        budgetAmountMinor: 25000n,
+        period: "custom",
+        intervalDays: 14,
+        anchorOn: "2026-08-03",
+        overrides: [{ periodStartOn: "2026-08-17", budgetAmountMinor: "40000" }],
+        history: [],
+      }],
       [{ id: "acc-1", spaceId: "space-1", name: "Revolut", kind: "bank", icon: null, colorToken: null, primaryCurrency: "EUR", createdBy: "user-author-acc", isArchived: false, createdAt: NOW, updatedAt: NOW, archivedAt: null }],
       [
         { moneyAccountId: "acc-1", currency: "USD", openingBalanceMinor: -2500n, displayOrder: 1 },
@@ -106,7 +115,15 @@ describe("account snapshot", () => {
     ]);
 
     expect(snapshot.categories[0]?.budgets).toEqual([
-      { currency: "EUR", budgetAmountMinor: "25000" },
+      {
+        currency: "EUR",
+        budgetAmountMinor: "25000",
+        period: "custom",
+        intervalDays: 14,
+        anchorOn: "2026-08-03",
+        overrides: [{ periodStartOn: "2026-08-17", budgetAmountMinor: "40000" }],
+        history: [],
+      },
     ]);
     expect(snapshot.categories[0]?.createdBy).toBe("user-author-cat");
     // El cliente pinta las divisas en el orden que fijó la persona.

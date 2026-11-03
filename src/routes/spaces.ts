@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { logFailure } from "../lib/log";
 import { errorResponse } from "../lib/http";
 import { isCheckViolation, isUniqueViolation } from "../lib/pg";
 import { boundedString, parseBody } from "../lib/validation";
@@ -105,7 +106,7 @@ export function createSpacesRoute(
         },
       });
     } catch (error) {
-      console.error("Cancel pending couple invitation failed:", error);
+      logFailure("cancel_pending_couple_invitation", error);
       return errorResponse(c, "INTERNAL_SERVER_ERROR");
     }
   });

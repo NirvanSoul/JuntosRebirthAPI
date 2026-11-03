@@ -1,4 +1,5 @@
 import { createMiddleware } from "hono/factory";
+import { logFailure } from "../lib/log";
 import { errorResponse } from "../lib/http";
 import type { AuthVariables } from "./auth";
 import {
@@ -49,7 +50,7 @@ export function createRequireActiveSpaceMember(
       c.set("activeSpaceMembership", membership);
       await next();
     } catch (error) {
-      console.error("requireActiveSpaceMember failed:", error);
+      logFailure("requireactivespacemember", error);
       return errorResponse(c, "INTERNAL_SERVER_ERROR", "Internal error.");
     }
   });

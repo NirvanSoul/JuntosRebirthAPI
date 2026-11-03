@@ -1,4 +1,5 @@
 import { and, desc, eq } from "drizzle-orm";
+import { logFailure } from "../lib/log";
 import type { Database } from "../db/client";
 import { customExchangeRates, exchangeRateSnapshots } from "../db/schema";
 import { convertMinorAmount, fromMinorUnits, toMinorUnits } from "../lib/decimal";
@@ -25,7 +26,9 @@ export type CurrentRates = {
   stale: boolean;
 };
 
-export class ExchangeRatesUnavailableError extends Error {}
+export class ExchangeRatesUnavailableError extends Error {
+  override name = "ExchangeRatesUnavailableError";
+}
 
 /**
  * La tasa BCV no "vence" cada N minutos: rige un día calendario completo de
@@ -166,10 +169,7 @@ export async function captureNextDayRate(
   try {
     liveRates = await venezuelaRateService.getRates();
   } catch (error) {
-    console.error(
-      "Venezuela next-day rate poll failed:",
-      error instanceof Error ? error.message : String(error),
-    );
+    logFailure("venezuela_next_day_rate_poll", error);
     return { captured: false };
   }
 
@@ -313,10 +313,7 @@ export async function buildMovementSnapshot(
   try {
     resolved = await resolveRates(db, "VE", venezuelaRateService);
   } catch (error) {
-    console.error(
-      "Venezuela exchange snapshot unavailable, creating movement without it:",
-      error instanceof Error ? error.message : String(error),
-    );
+    logFailure("venezuela.movement_snapshot_rates", error);
     resolved = null;
   }
   // El libro contable USD no admite una conversión desconocida. Antes se

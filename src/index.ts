@@ -1,4 +1,6 @@
 import { Hono } from "hono";
+import { handleUnhandledError } from "./lib/error-handler";
+import { logFailure } from "./lib/log";
 import { cors } from "hono/cors";
 import { errorResponse } from "./lib/http";
 import { normalizeAuthErrorResponse } from "./lib/auth-errors";
@@ -57,12 +59,7 @@ app.use("*", (c, next) =>
   })(c, next),
 );
 
-// Un throw fuera del `try` de un handler devolvía el 500 pelado de Hono, que
-// no lleva el sobre `{ error: { code, message } }` que el cliente sabe leer.
-app.onError((error, c) => {
-  console.error("Unhandled error:", error instanceof Error ? error.message : error);
-  return errorResponse(c, "INTERNAL_SERVER_ERROR");
-});
+app.onError(handleUnhandledError);
 
 app.notFound((c) => errorResponse(c, "NOT_FOUND"));
 
@@ -127,10 +124,7 @@ const worker = Object.assign(app, {
           // publicación del BCV (~3:00pm–8:30pm VE); fuera de ella es un
           // no-op inmediato. Nunca debe tumbar el resto del cron.
           captureNextDayRate(createDb(env.DATABASE_URL), "VE").catch((error: unknown) => {
-            console.error(
-              "captureNextDayRate cron tick failed:",
-              error instanceof Error ? error.message : String(error),
-            );
+            logFailure("cron.capture_next_day_rate", error);
             return { captured: false };
           }),
         ]);

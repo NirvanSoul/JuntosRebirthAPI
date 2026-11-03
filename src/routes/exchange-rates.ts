@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { logFailure } from "../lib/log";
 import { createDb } from "../db/client";
 import { convertMinorAmount, fromMinorUnits, isPositiveDecimal, toMinorUnits } from "../lib/decimal";
 import { errorResponse } from "../lib/http";
@@ -95,14 +96,9 @@ function isCurrency(value: unknown): value is Currency {
 
 function handleUnavailable(c: Parameters<typeof errorResponse>[0], error: unknown) {
   if (error instanceof ExchangeRatesUnavailableError) {
-    const cause = error.cause;
-    console.error(
-      "Venezuela exchange rates failed:",
-      error.message,
-      cause instanceof Error ? `| cause: ${cause.message}` : "",
-    );
+    logFailure("venezuela_exchange_rates", error);
     return errorResponse(c, "VENEZUELA_RATES_UNAVAILABLE");
   }
-  console.error("Unexpected exchange rates failure:", error instanceof Error ? error.message : String(error));
+  logFailure("unexpected_exchange_rates_failure", error);
   return errorResponse(c, "INTERNAL_SERVER_ERROR");
 }

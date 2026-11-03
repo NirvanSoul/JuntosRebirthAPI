@@ -95,14 +95,16 @@ describe("account delta changes", () => {
       // 4: transactions (empty)
       [],
       // 5: budgets (for changed cat-1)
-      [{ categoryId: "cat-1", currency: "EUR", budgetAmountMinor: 50000n }],
+      [{ categoryId: "cat-1", currency: "EUR", budgetAmountMinor: 50000n, period: "month", intervalDays: null, anchorOn: null, overrides: [], history: [] }],
     ]);
 
     const changes = await buildChanges(db, "user-1", NOW);
 
     expect(changes.spaces).toHaveLength(1);
     expect(changes.categories).toHaveLength(1);
-    expect(changes.categories[0]?.budgets).toEqual([{ currency: "EUR", budgetAmountMinor: "50000" }]);
+    expect(changes.categories[0]?.budgets).toEqual([
+      { currency: "EUR", budgetAmountMinor: "50000", period: "month", intervalDays: null, anchorOn: null, overrides: [], history: [] },
+    ]);
     expect(changes.moneyAccounts).toEqual([]);
     expect(changes.recurringSeries).toEqual([]);
     expect(changes.transactions).toEqual([]);

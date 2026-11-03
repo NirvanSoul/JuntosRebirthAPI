@@ -1,7 +1,15 @@
 import { neon } from "@neondatabase/serverless";
+import { inject } from "vitest";
 import { createDb, type Database } from "../../src/db/client";
 import { inArray } from "drizzle-orm";
 import { spaces, user } from "../../src/db/schema";
+
+declare module "vitest" {
+  export interface ProvidedContext {
+    integrationDatabaseUrl: string;
+    integrationDatabaseMode: "local" | "remote";
+  }
+}
 
 /**
  * Las pruebas de integración corren contra PostgreSQL real, porque todo lo
@@ -15,16 +23,16 @@ import { spaces, user } from "../../src/db/schema";
  */
 export const TEST_USER_PREFIX = "itest-";
 
-// El proyecto se tipa solo contra los tipos de Cloudflare Workers, así que
-// `process` se declara aquí en lugar de añadir @types/node a todo el proyecto
-// y arriesgar que el código del Worker use APIs de Node por accidente.
-declare const process: { env: Record<string, string | undefined> };
-
 function databaseUrl(): string {
-  // `vitest.integration.config.ts` la inyecta; ver el comentario de allí.
-  const url = process.env.INTEGRATION_DATABASE_URL;
+  // `test/integration/node/global-setup.mjs` la entrega tras comprobar que la
+  // base es desechable; ver `vitest.integration.config.ts`.
+  const url = inject("integrationDatabaseUrl");
   if (!url) throw new Error("Run through vitest.integration.config.ts");
   return url;
+}
+
+export function integrationDatabaseMode() {
+  return inject("integrationDatabaseMode");
 }
 
 export function testDb(): Database {
@@ -69,22 +77,48 @@ export function registerTestUser(id: string) {
 
 /** Borra únicamente lo creado por las pruebas. */
 export async function cleanupTestUsers() {
-  const ids = [...createdTestUserIds];
-  if (ids.length) {
-    // Primero espacios: `created_by` es SET NULL, así que borrar solo usuarios
-    // dejaría espacios huérfanos y ensuciaría el siguiente archivo.
-    await testDb().delete(spaces).where(inArray(spaces.createdBy, ids));
-    await testDb().delete(user).where(inArray(user.id, ids));
-  }
+  const ids = [...createdTestUserIds].filter((id) => id.startsWith(TEST_USER_PREFIX));
   createdTestUserIds.clear();
+  if (!ids.length) return;
   const sql = rawSql();
   // Los agregados de comercios no cuelgan de ningún usuario, así que el
-  // ON DELETE CASCADE no los alcanza: se retiran los que se quedan sin votos.
-  await sql`
-    DELETE FROM merchant_feedback_aggregates a
-     WHERE NOT EXISTS (
-       SELECT 1 FROM merchant_feedback_votes v
-        WHERE v.country_code = a.country_code
-          AND v.normalized_merchant = a.normalized_merchant
-          AND v.canonical_category_key = a.canonical_category_key)`;
+  // ON DELETE CASCADE no los alcanza. Solo se tocan las claves que votaron
+  // usuarios de prueba: se recalculan con los votos que queden (de otras
+  // personas) y se borran únicamente si ya no queda ninguno.
+  const touched = await sql.query(
+    `SELECT DISTINCT country_code, normalized_merchant, canonical_category_key
+       FROM merchant_feedback_votes WHERE user_id = ANY($1::text[])`,
+    [ids],
+  );
+  // Primero espacios: `created_by` es SET NULL, así que borrar solo usuarios
+  // dejaría espacios huérfanos y ensuciaría el siguiente archivo.
+  await testDb().delete(spaces).where(inArray(spaces.createdBy, ids));
+  await testDb().delete(user).where(inArray(user.id, ids));
+  for (const key of touched as { country_code: string; normalized_merchant: string; canonical_category_key: string }[]) {
+    await recomputeMerchantAggregate(key.country_code, key.normalized_merchant, key.canonical_category_key);
+  }
+}
+
+/** Recalcula un único agregado a partir de los votos que existan. */
+export async function recomputeMerchantAggregate(countryCode: string, merchant: string, categoryKey: string) {
+  const sql = rawSql();
+  await sql.transaction([
+    sql`
+      UPDATE merchant_feedback_aggregates a
+         SET unique_users = s.users, total_confirmations = s.confirmations, updated_at = now()
+        FROM (SELECT count(*)::int AS users, coalesce(sum(confirmations), 0)::int AS confirmations
+                FROM merchant_feedback_votes
+               WHERE country_code = ${countryCode} AND normalized_merchant = ${merchant}
+                 AND canonical_category_key = ${categoryKey}) s
+       WHERE a.country_code = ${countryCode} AND a.normalized_merchant = ${merchant}
+         AND a.canonical_category_key = ${categoryKey} AND s.users > 0`,
+    sql`
+      DELETE FROM merchant_feedback_aggregates a
+       WHERE a.country_code = ${countryCode} AND a.normalized_merchant = ${merchant}
+         AND a.canonical_category_key = ${categoryKey}
+         AND NOT EXISTS (
+           SELECT 1 FROM merchant_feedback_votes v
+            WHERE v.country_code = a.country_code AND v.normalized_merchant = a.normalized_merchant
+              AND v.canonical_category_key = a.canonical_category_key)`,
+  ]);
 }

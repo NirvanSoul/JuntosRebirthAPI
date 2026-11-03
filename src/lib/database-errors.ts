@@ -11,7 +11,7 @@ type DatabaseError = {
   constraint?: unknown;
 };
 
-function databaseErrorCodes(error: unknown): string[] {
+export function databaseErrorCodes(error: unknown): string[] {
   const codes: string[] = [];
   let current = error;
   for (let depth = 0; depth < 3 && current && typeof current === "object"; depth += 1) {
@@ -22,7 +22,7 @@ function databaseErrorCodes(error: unknown): string[] {
   return codes;
 }
 
-function databaseErrorIdentifiers(error: unknown): string[] {
+export function databaseErrorIdentifiers(error: unknown): string[] {
   const identifiers: string[] = [];
   let current = error;
   for (let depth = 0; depth < 3 && current && typeof current === "object"; depth += 1) {
@@ -40,6 +40,15 @@ function databaseErrorIdentifiers(error: unknown): string[] {
     current = record.cause;
   }
   return [...new Set(identifiers)];
+}
+
+/**
+ * `40P01` (deadlock detected) y `40001` (serialization failure): PostgreSQL
+ * abortó la transacción entera para deshacer un cruce con otra. No se confirmó
+ * nada y repetirla es seguro si la operación es idempotente.
+ */
+export function isTransientConcurrencyFailure(error: unknown): boolean {
+  return databaseErrorCodes(error).some((code) => code === "40P01" || code === "40001");
 }
 
 /**

@@ -13,7 +13,9 @@ export type VenezuelaRate = {
   rate: string;
 };
 
-export class VenezuelaRateServiceError extends Error {}
+export class VenezuelaRateServiceError extends Error {
+  override name = "VenezuelaRateServiceError";
+}
 
 export class VenezuelaRateService {
   /**

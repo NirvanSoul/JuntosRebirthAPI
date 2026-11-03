@@ -15,6 +15,7 @@ import {
   user,
   userProfiles,
 } from "../db/schema";
+import { serializeCategoryBudgetSchedule } from "./category-budget-schedule";
 import { exchangeSnapshotFromRows } from "./transactions";
 
 /**
@@ -49,7 +50,9 @@ export type SnapshotCategory = {
   createdAt: Date;
   updatedAt: Date;
   archivedAt: Date | null;
-  budgets: { currency: string; budgetAmountMinor: string }[];
+  budgets: ({ currency: string; budgetAmountMinor: string } & ReturnType<
+    typeof serializeCategoryBudgetSchedule
+  >)[];
 };
 
 export type SnapshotMoneyAccount = {
@@ -273,6 +276,11 @@ async function readDeltaCollections(db: Database, spaceIds: string[], since: Dat
             categoryId: categoryBudgets.categoryId,
             currency: categoryBudgets.currency,
             budgetAmountMinor: categoryBudgets.budgetAmountMinor,
+            period: categoryBudgets.period,
+            intervalDays: categoryBudgets.intervalDays,
+            anchorOn: categoryBudgets.anchorOn,
+            overrides: categoryBudgets.overrides,
+            history: categoryBudgets.history,
           })
           .from(categoryBudgets)
           .innerJoin(categories, eq(categoryBudgets.categoryId, categories.id))
@@ -329,6 +337,7 @@ function shapeCollections(rows: RawCollections) {
     list.push({
       currency: budget.currency,
       budgetAmountMinor: serializeMinorAmount(budget.budgetAmountMinor),
+      ...serializeCategoryBudgetSchedule(budget),
     });
     budgetsByCategory.set(budget.categoryId, list);
   }
@@ -424,6 +433,11 @@ export async function buildSnapshot(db: Database, userId: string): Promise<Snaps
           categoryId: categoryBudgets.categoryId,
           currency: categoryBudgets.currency,
           budgetAmountMinor: categoryBudgets.budgetAmountMinor,
+          period: categoryBudgets.period,
+          intervalDays: categoryBudgets.intervalDays,
+          anchorOn: categoryBudgets.anchorOn,
+          overrides: categoryBudgets.overrides,
+            history: categoryBudgets.history,
         })
         .from(categoryBudgets)
         .innerJoin(categories, eq(categoryBudgets.categoryId, categories.id))

@@ -1,5 +1,6 @@
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import type { Database } from "../db/client";
+import { spaceWriteLockOf } from "../db/versioned-writes";
 import { recurringTransactionOccurrences as occurrences, recurringTransactionSeries as series } from "../db/schema";
 import { serializeMinorAmount } from "../lib/money";
 
@@ -16,7 +17,15 @@ export async function findSeries(db:Database,spaceId:string,id:string){const [ro
 export async function createSeries(db:Database,input:{spaceId:string;userId:string;type:"expense"|"income";amountMinor:bigint;currency:string;title:string;categoryId:string;moneyAccountId:string|null;frequency:Frequency;startsOn:string;customDates?:string[]}){const {customDates,userId,...values}=input;const id=crypto.randomUUID(),now=new Date(),next=input.frequency==="custom"?customDates![0]!:input.startsOn; const insert=db.insert(series).values({id,...values,createdBy:userId,nextOccurrenceOn:next,createdAt:now,updatedAt:now}); if(input.frequency==="custom"){await db.batch([insert,...customDates!.map(scheduledOn=>db.insert(occurrences).values({seriesId:id,scheduledOn,status:"pending",createdAt:now,updatedAt:now}))]);}else await insert; return {id,...values,createdBy:userId,amountMinor:serializeMinorAmount(input.amountMinor),nextOccurrenceOn:next,generatedOccurrences:0,createdAt:now,updatedAt:now} as SeriesResponse;}
 export async function updateSeries(db:Database,input:{spaceId:string;id:string;type?:"expense"|"income";amountMinor?:bigint;currency?:string;title?:string;categoryId?:string;moneyAccountId?:string|null;isArchived?:boolean;startsOn?:string;frequency?:Frequency;nextOccurrenceOn?:string|null}){const values:Record<string,unknown>={updatedAt:new Date()}; for(const k of ["type","amountMinor","currency","title","categoryId","moneyAccountId","startsOn","frequency","nextOccurrenceOn"] as const)if(input[k]!==undefined)values[k]=input[k];if(input.isArchived!==undefined){values.isArchived=input.isArchived;values.archivedAt=input.isArchived?new Date():null;if(input.isArchived)values.nextOccurrenceOn=null;}const [row]=await db.update(series).set(values).where(and(eq(series.id,input.id),eq(series.spaceId,input.spaceId))).returning(fields);return row?serialize(row):null;}
 export async function pendingNext(db:Database,seriesId:string){const [row]=await db.select({scheduledOn:occurrences.scheduledOn}).from(occurrences).where(and(eq(occurrences.seriesId,seriesId),eq(occurrences.status,"pending"))).orderBy(asc(occurrences.scheduledOn)).limit(1);return row?.scheduledOn??null;}
-export async function createOccurrence(db:Database,seriesId:string,scheduledOn:string){const [row]=await db.insert(occurrences).values({seriesId,scheduledOn,status:"pending"}).returning(occurrenceFields);return row;}
+/**
+ * La siguiente fecha de una serie personalizada se recalcula en SQL, en la
+ * misma transacción que el cambio de ocurrencia y detrás del bloqueo del
+ * espacio (el mismo que toma el motor). Antes la ruta leía la siguiente
+ * pendiente y la escribía después: si el motor generaba entre medias, la serie
+ * quedaba apuntando a una ocurrencia ya generada y no avanzaba nunca más.
+ */
+function refreshNextOccurrence(db:Database,seriesId:string){return db.update(series).set({nextOccurrenceOn:sql`(SELECT min(${occurrences.scheduledOn}) FROM ${occurrences} WHERE ${occurrences.seriesId} = ${seriesId} AND ${occurrences.status} = 'pending')`,updatedAt:new Date()}).where(eq(series.id,seriesId));}
+export async function createOccurrence(db:Database,seriesId:string,scheduledOn:string){const [, [row]]=await db.batch([spaceWriteLockOf(db,series,seriesId),db.insert(occurrences).values({seriesId,scheduledOn,status:"pending"}).returning(occurrenceFields),refreshNextOccurrence(db,seriesId)]);return row;}
 export async function findOccurrence(db:Database,seriesId:string,id:string){const [row]=await db.select(occurrenceFields).from(occurrences).where(and(eq(occurrences.id,id),eq(occurrences.seriesId,seriesId)));return row??null;}
 export async function findOccurrenceOn(db:Database,seriesId:string,scheduledOn:string){const [row]=await db.select({id:occurrences.id}).from(occurrences).where(and(eq(occurrences.seriesId,seriesId),eq(occurrences.scheduledOn,scheduledOn))).limit(1);return row??null;}
-export async function updateOccurrence(db:Database,seriesId:string,id:string,input:{scheduledOn?:string;status?:"skipped"}){const [row]=await db.update(occurrences).set({...input,updatedAt:new Date()}).where(and(eq(occurrences.id,id),eq(occurrences.seriesId,seriesId),eq(occurrences.status,"pending"))).returning(occurrenceFields);return row??null;}
+export async function updateOccurrence(db:Database,seriesId:string,id:string,input:{scheduledOn?:string;status?:"skipped"}){const [, [row]]=await db.batch([spaceWriteLockOf(db,series,seriesId),db.update(occurrences).set({...input,updatedAt:new Date()}).where(and(eq(occurrences.id,id),eq(occurrences.seriesId,seriesId),eq(occurrences.status,"pending"))).returning(occurrenceFields),refreshNextOccurrence(db,seriesId)]);return row??null;}

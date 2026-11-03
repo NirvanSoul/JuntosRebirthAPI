@@ -1,5 +1,7 @@
-import { eq, inArray, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, notInArray, sql } from "drizzle-orm";
+import type { PgColumn } from "drizzle-orm/pg-core";
 import type { Database } from "../db/client";
+import { insertWhen, spaceWriteLock, versionIsCurrent, type VersionedTable } from "../db/versioned-writes";
 import {
   categories,
   categoryAliases,
@@ -12,9 +14,14 @@ import {
   transactionAliases,
   transactions,
 } from "../db/schema";
+import {
+  isCategoryBudgetScheduleIssue,
+  parseCategoryBudgetSchedule,
+} from "./category-budget-schedule";
 import { buildMovementSnapshot, type MovementSnapshot } from "./exchange-rates";
 import { exchangeSnapshotFromRows, snapshotReferenceRateValues, type ExchangeSnapshotDTO } from "./transactions";
 import { isUniqueViolation } from "../lib/pg";
+import { isTransientConcurrencyFailure } from "../lib/database-errors";
 
 type Row = Record<string, unknown>;
 
@@ -26,12 +33,44 @@ export type SpaceSyncPayload = {
   transactions: Row[];
 };
 
+type SyncCollection = "categories" | "moneyAccounts" | "recurringSeries" | "transactions";
+
+/**
+ * Una versión enviada que el servidor no aplicó. `NEWER_VERSION`: el servidor
+ * ya tenía un `updatedAt` posterior (`serverUpdatedAt`), que llega también por
+ * `/v1/sync/changes`. `NOT_IN_SPACE`: el id remoto pertenece a otro espacio.
+ */
+export type SyncConflict = {
+  collection: SyncCollection;
+  localId: string;
+  remoteId: string;
+  reason: "NEWER_VERSION" | "NOT_IN_SPACE";
+  serverUpdatedAt: string | null;
+};
+
+export type SyncedTransaction = {
+  localId: string;
+  remoteId: string;
+  /**
+   * `true`: se guardó esta versión y los demás campos son los suyos.
+   * `false`: se descartó; `updatedAt`, `accountingAmountMinorUsd` y
+   * `exchangeSnapshot` son los de la versión canónica del servidor (o `null`
+   * si no pertenece al espacio), nunca los enviados.
+   */
+  applied: boolean;
+  updatedAt: string | null;
+  accountingAmountMinorUsd: string | null;
+  exchangeSnapshot: ExchangeSnapshotDTO | null;
+};
+
 export type SpaceSyncResult = {
   categoryCount: number;
   moneyAccountCount: number;
   recurringSeriesCount: number;
   transactionCount: number;
-  transactions?: { localId: string; remoteId: string; updatedAt: string; accountingAmountMinorUsd: string | null; exchangeSnapshot: ExchangeSnapshotDTO | null }[];
+  transactions?: SyncedTransaction[];
+  /** Solo presente si alguna versión enviada no se aplicó. */
+  conflicts?: SyncConflict[];
 };
 
 export type SyncValidationCode =
@@ -80,6 +119,29 @@ type ExistingTransaction = Existing & {
   isArchived: boolean;
   accountingAmountMinorUsd: bigint | null;
 };
+
+/** Otra petición cambió el importe de un movimiento mientras se procesaba este lote. */
+export class SyncConcurrentUpdateError extends Error {
+  constructor() {
+    super("SYNC_CONCURRENT_UPDATE");
+    this.name = "SyncConcurrentUpdateError";
+  }
+}
+
+/**
+ * Si se descarta una versión vieja, el remitente puede tener ya un cursor
+ * posterior a la versión canónica. Tocar `server_updated_at` la vuelve a
+ * publicar en `/v1/sync/changes` para que converja incluso un cliente que no
+ * entienda `conflicts`.
+ */
+function republishNewerVersion(db: Database, table: VersionedTable, id: string, spaceId: string, updatedAt: Date) {
+  return db
+    .update(table)
+    // `updatedAt` explícito: si no, el `$onUpdate` del esquema lo cambiaría y
+    // la versión canónica dejaría de serlo.
+    .set({ serverUpdatedAt: sql`now()`, updatedAt: sql`${table.updatedAt}` })
+    .where(and(eq(table.id, id), eq(table.spaceId, spaceId), gt(table.updatedAt, updatedAt)));
+}
 
 export class RecurrenceOccurrenceConflictError extends Error {
   readonly details?: { recurrenceSeriesId: string; occurredOn: string };
@@ -241,7 +303,12 @@ function recurrenceOccurrenceSignature(row: Row) {
  *
  * Los conflictos se resuelven por última escritura: una fila solo se sobrescribe
  * si el `updatedAt` entrante es igual o posterior al almacenado, de modo que un
- * dispositivo con datos viejos no pisa los del otro.
+ * dispositivo con datos viejos no pisa los del otro. La decisión la toma el
+ * propio upsert dentro del batch, y todos los hijos de esa fila (presupuestos,
+ * saldos, tasas congeladas) se escriben condicionados a ella con
+ * `versionIsCurrent`: una versión descartada no borra ni sustituye nada. Las
+ * versiones descartadas se devuelven en `conflicts` y, en `transactions`, con
+ * `applied: false` y los valores canónicos.
  */
 export async function syncSpaceData(
   db: Database,
@@ -253,6 +320,62 @@ export async function syncSpaceData(
   const installationId = text(payload.installationId);
   if (!installationId) throw syncIssue("INVALID_SYNC_PAYLOAD", ["installationId"], "REQUIRED_STRING");
   validatePayload(payload);
+
+  let attempt = await syncOnceRetryingTransient(db, spaceId, userId, payload, installationId, creatorCountryCode);
+  const result = attempt.result;
+  // Un movimiento que no cambiaba importe/moneda/fecha conserva sus tasas
+  // congeladas; si otra petición cambió esos campos entre la lectura y el
+  // batch, el upsert lo rechaza (ver `monetaryFieldsUnchanged`). Se reintenta
+  // solo ese movimiento con una lectura nueva. El resto del lote ya está
+  // confirmado y el reintento es idempotente.
+  for (let retry = 0; attempt.raced.size > 0; retry += 1) {
+    if (retry >= 2) throw new SyncConcurrentUpdateError();
+    attempt = await syncOnceRetryingTransient(
+      db,
+      spaceId,
+      userId,
+      { ...payload, categories: [], moneyAccounts: [], recurringSeries: [], transactions: payload.transactions.filter((row) => attempt.raced.has(text(row.id))) },
+      installationId,
+      creatorCountryCode,
+    );
+    const retried = new Map((attempt.result.transactions ?? []).map((row) => [row.localId, row]));
+    result.transactions = result.transactions?.map((row) => retried.get(row.localId) ?? row);
+    const conflicts = [
+      ...(result.conflicts ?? []).filter((conflict) => conflict.collection !== "transactions" || !retried.has(conflict.localId)),
+      ...(attempt.result.conflicts ?? []),
+    ];
+    if (conflicts.length) result.conflicts = conflicts; else delete result.conflicts;
+  }
+  return result;
+}
+
+/**
+ * Un interbloqueo o fallo de serialización aborta el batch completo (no se
+ * confirma nada), así que se repite una vez con una lectura nueva. Si vuelve a
+ * ocurrir, el cliente recibe `409 SYNC_CONCURRENT_UPDATE` y reintenta.
+ */
+async function syncOnceRetryingTransient(...args: Parameters<typeof syncOnce>): ReturnType<typeof syncOnce> {
+  try {
+    return await syncOnce(...args);
+  } catch (error) {
+    if (!isTransientConcurrencyFailure(error)) throw error;
+  }
+  try {
+    return await syncOnce(...args);
+  } catch (error) {
+    if (isTransientConcurrencyFailure(error)) throw new SyncConcurrentUpdateError();
+    throw error;
+  }
+}
+
+async function syncOnce(
+  db: Database,
+  spaceId: string,
+  userId: string,
+  payload: SpaceSyncPayload,
+  installationId: string,
+  creatorCountryCode: string | null,
+): Promise<{ result: SpaceSyncResult; raced: Set<string> }> {
 
   const [space] = await db
     .select({ currency: spaces.currency, countryCode: spaces.countryCode })
@@ -420,16 +543,31 @@ export async function syncSpaceData(
     sourceLocalId: localId,
   });
 
-  const writes: unknown[] = [];
-  const syncedTransactions: SpaceSyncResult["transactions"] = [];
+  // Dos lotes del mismo espacio que traen las mismas filas en orden distinto
+  // se bloqueaban en cruz (`40P01 deadlock detected`). Un bloqueo consultivo
+  // de transacción por espacio, primera sentencia del batch, los serializa:
+  // se libera solo al confirmar o abortar y no afecta a otros espacios.
+  const writes: unknown[] = [spaceWriteLock(db, spaceId)];
+  // Cada upsert de un padre devuelve su fila solo si aplicó esta versión.
+  const parents = new Map<string, { collection: SyncCollection; table: VersionedTable; id: string; updatedAt: Date; writeIndex: number }>();
+  const upsertParent = (collection: SyncCollection, table: VersionedTable, id: string, updatedAt: Date, upsert: { returning: (fields: { id: PgColumn }) => unknown }) => {
+    parents.set(`${collection}:${id}`, { collection, table, id, updatedAt, writeIndex: writes.length });
+    writes.push(upsert.returning({ id: table.id }));
+    writes.push(republishNewerVersion(db, table, id, spaceId, updatedAt));
+  };
 
   for (const [categoryIndex, row] of payload.categories.entries()) {
     const localId = text(row.id);
     const id = categoryIds.get(localId)!;
     const updatedAt = date(row.updatedAt, now);
     const isArchived = Boolean(row.isArchived);
+    const current = versionIsCurrent(categories, id, spaceId, updatedAt);
 
-    writes.push(
+    upsertParent(
+      "categories",
+      categories,
+      id,
+      updatedAt,
       db
         .insert(categories)
         .values({
@@ -471,36 +609,52 @@ export async function syncSpaceData(
 
     const syncedBudgets = Array.isArray(row.budgets) ? row.budgets as Row[] : null;
     if (syncedBudgets) {
-      writes.push(db.delete(categoryBudgets).where(eq(categoryBudgets.categoryId, id)));
+      // El array es el conjunto completo de monedas, pero solo si esta versión
+      // de la categoría es la vigente: se retiran las monedas ausentes y se
+      // hace upsert del resto. Una entrada sin campos de periodicidad (cliente
+      // anterior a 0033) solo cambia el importe y conserva periodicidad,
+      // excepciones e historial que fijó otro dispositivo.
+      const withSchedule: (typeof categoryBudgets.$inferInsert)[] = [];
+      const amountOnly: (typeof categoryBudgets.$inferInsert)[] = [];
       for (const [budgetIndex, budget] of syncedBudgets.entries()) {
         const currency = currencyCode(budget.currency, ["categories", categoryIndex, "budgets", budgetIndex, "currency"], row, "category");
         const amount = syncInteger(budget.budgetAmountMinor, ["categories", categoryIndex, "budgets", budgetIndex, "budgetAmountMinor"], row, "category");
         if (amount < 0) throw syncIssue("INVALID_SYNC_PAYLOAD", ["categories", categoryIndex, "budgets", budgetIndex, "budgetAmountMinor"], "MUST_BE_NON_NEGATIVE", row, "category");
-        writes.push(db.insert(categoryBudgets).values({
-          categoryId: id,
-          currency,
-          budgetAmountMinor: BigInt(amount),
-          createdBy: userId,
-        }));
+        const base = { categoryId: id, currency, budgetAmountMinor: BigInt(amount), createdBy: userId };
+        if (!hasBudgetSchedule(budget)) {
+          amountOnly.push(base);
+          continue;
+        }
+        // Ya validada en `validateSyncedCategory`.
+        const schedule = parseCategoryBudgetSchedule(budget);
+        if (isCategoryBudgetScheduleIssue(schedule)) throw new Error("INVALID_PAYLOAD");
+        withSchedule.push({ ...base, ...schedule });
+      }
+      writes.push(db.delete(categoryBudgets).where(and(
+        eq(categoryBudgets.categoryId, id),
+        notInArray(categoryBudgets.currency, [...withSchedule, ...amountOnly].map((budget) => budget.currency)),
+        current,
+      )));
+      if (withSchedule.length) {
+        writes.push(insertWhen(db, categoryBudgets, withSchedule, current, sql` ON CONFLICT (category_id, currency) DO UPDATE SET budget_amount_minor = excluded.budget_amount_minor, period = excluded.period, interval_days = excluded.interval_days, anchor_on = excluded.anchor_on, overrides = excluded.overrides, history = excluded.history, updated_at = now()`));
+      }
+      if (amountOnly.length) {
+        writes.push(insertWhen(db, categoryBudgets, amountOnly, current, sql` ON CONFLICT (category_id, currency) DO UPDATE SET budget_amount_minor = excluded.budget_amount_minor, updated_at = now()`));
       }
     } else if (row.budgetMinor !== null && row.budgetMinor !== undefined) {
       // Compatibilidad con clientes anteriores: un único presupuesto usa la
-      // moneda canónica del espacio.
+      // moneda canónica del espacio. Solo cambia el importe: la periodicidad,
+      // excepciones e historial que fijó un cliente nuevo se conservan.
       const budget = syncInteger(row.budgetMinor, ["categories", categoryIndex, "budgetMinor"], row, "category");
       if (budget < 0) throw syncIssue("INVALID_SYNC_PAYLOAD", ["categories", categoryIndex, "budgetMinor"], "MUST_BE_NON_NEGATIVE", row, "category");
       writes.push(
-        db
-          .insert(categoryBudgets)
-          .values({
-            categoryId: id,
-            currency: space.currency,
-            budgetAmountMinor: BigInt(budget),
-            createdBy: userId,
-          })
-          .onConflictDoUpdate({
-            target: [categoryBudgets.categoryId, categoryBudgets.currency],
-            set: { budgetAmountMinor: sql`excluded.budget_amount_minor`, updatedAt: now },
-          }),
+        insertWhen(
+          db,
+          categoryBudgets,
+          [{ categoryId: id, currency: space.currency, budgetAmountMinor: BigInt(budget), createdBy: userId }],
+          current,
+          sql` ON CONFLICT (category_id, currency) DO UPDATE SET budget_amount_minor = excluded.budget_amount_minor, updated_at = now()`,
+        ),
       );
     }
 
@@ -529,8 +683,13 @@ export async function syncSpaceData(
     const id = accountIds.get(localId)!;
     const updatedAt = date(row.updatedAt, now);
     const isArchived = Boolean(row.isArchived);
+    const current = versionIsCurrent(moneyAccounts, id, spaceId, updatedAt);
 
-    writes.push(
+    upsertParent(
+      "moneyAccounts",
+      moneyAccounts,
+      id,
+      updatedAt,
       db
         .insert(moneyAccounts)
         .values({
@@ -568,21 +727,18 @@ export async function syncSpaceData(
     );
 
     // Las monedas de una cuenta se reescriben enteras: retirar una divisa en un
-    // dispositivo debe retirarla en todos.
+    // dispositivo debe retirarla en todos. Solo si esta versión es la vigente.
     const balances = Array.isArray(row.balances) ? (row.balances as Row[]) : [];
     writes.push(
-      db.delete(moneyAccountBalances).where(eq(moneyAccountBalances.moneyAccountId, id)),
+      db.delete(moneyAccountBalances).where(and(eq(moneyAccountBalances.moneyAccountId, id), current)),
     );
-    for (const [balanceIndex, balance] of balances.entries()) {
-      writes.push(
-        db.insert(moneyAccountBalances).values({
-          moneyAccountId: id,
-          currency: currencyCode(balance.currency, ["moneyAccounts", accountIndex, "balances", balanceIndex, "currency"], row, "moneyAccount"),
-          openingBalanceMinor: BigInt(syncInteger(balance.openingBalanceMinor, ["moneyAccounts", accountIndex, "balances", balanceIndex, "openingBalanceMinor"], row, "moneyAccount")),
-          displayOrder: syncInteger(balance.position ?? balance.displayOrder, ["moneyAccounts", accountIndex, "balances", balanceIndex, "position"], row, "moneyAccount"),
-        }),
-      );
-    }
+    const balanceRows = balances.map((balance, balanceIndex) => ({
+      moneyAccountId: id,
+      currency: currencyCode(balance.currency, ["moneyAccounts", accountIndex, "balances", balanceIndex, "currency"], row, "moneyAccount"),
+      openingBalanceMinor: BigInt(syncInteger(balance.openingBalanceMinor, ["moneyAccounts", accountIndex, "balances", balanceIndex, "openingBalanceMinor"], row, "moneyAccount")),
+      displayOrder: syncInteger(balance.position ?? balance.displayOrder, ["moneyAccounts", accountIndex, "balances", balanceIndex, "position"], row, "moneyAccount"),
+    }));
+    if (balanceRows.length) writes.push(insertWhen(db, moneyAccountBalances, balanceRows, current));
   }
 
   for (const [seriesIndex, row] of payload.recurringSeries.entries()) {
@@ -602,7 +758,11 @@ export async function syncSpaceData(
       ? null
       : stringOrNull(dateOnly(row.nextOccurrenceOn, startsOn));
 
-    writes.push(
+    upsertParent(
+      "recurringSeries",
+      recurringTransactionSeries,
+      id,
+      updatedAt,
       db
         .insert(recurringTransactionSeries)
         .values({
@@ -651,7 +811,10 @@ export async function syncSpaceData(
   }
 
   const writtenTransactionIds = new Set<string>();
-  const syncedTransactionById = new Map<string, Omit<NonNullable<SpaceSyncResult["transactions"]>[number], "localId">>();
+  const syncedTransactionById = new Map<string, Omit<SyncedTransaction, "localId" | "applied">>();
+  // Movimientos que conservan sus tasas porque su importe no cambió; ver
+  // `monetaryFieldsUnchanged` más abajo.
+  const preservedRateIds = new Set<string>();
   for (const [transactionIndex, row] of payload.transactions.entries()) {
     const localId = text(row.id);
     const id = transactionIds.get(localId)!;
@@ -691,8 +854,21 @@ export async function syncSpaceData(
       snapshot = result.snapshot;
     }
     const accountingAmountMinorUsd = currency === "USD" ? amountMinor : snapshot?.rows.find((rate) => rate.rateSource === "BCV" && rate.displayCurrency === "USD")?.convertedAmountMinor ?? (regenerate ? null : existing?.accountingAmountMinorUsd ?? null);
+    // Sin regenerar, las tasas (y `accountingAmountMinorUsd`) guardadas solo
+    // son válidas para el importe/moneda/fecha leídos antes del batch. Si
+    // otra petición los cambió mientras tanto, esta versión no se aplica aquí
+    // y `syncSpaceData` la reintenta con una lectura nueva.
+    if (!regenerate) preservedRateIds.add(id);
+    const monetaryFieldsUnchanged = regenerate
+      ? sql``
+      : sql` AND ${transactions.amountMinor} = excluded.amount_minor AND ${transactions.currency} = excluded.currency AND ${transactions.occurredOn} = excluded.occurred_on`;
+    const current = versionIsCurrent(transactions, id, spaceId, updatedAt);
 
-    writes.push(
+    upsertParent(
+      "transactions",
+      transactions,
+      id,
+      updatedAt,
       db
         .insert(transactions)
         .values({
@@ -739,13 +915,13 @@ export async function syncSpaceData(
             archivedAt: sql`excluded.archived_at`,
             updatedAt: sql`excluded.updated_at`,
           },
-          setWhere: sql`${transactions.spaceId} = ${spaceId} AND excluded.updated_at >= ${transactions.updatedAt}`,
+          setWhere: sql`${transactions.spaceId} = ${spaceId} AND excluded.updated_at >= ${transactions.updatedAt}${monetaryFieldsUnchanged}`,
         }),
     );
 
     if (regenerate) {
-      writes.push(db.delete(transactionReferenceRates).where(eq(transactionReferenceRates.transactionId, id)));
-      if (snapshot) writes.push(db.insert(transactionReferenceRates).values(snapshotReferenceRateValues(id, snapshot)));
+      writes.push(db.delete(transactionReferenceRates).where(and(eq(transactionReferenceRates.transactionId, id), current)));
+      if (snapshot?.rows.length) writes.push(insertWhen(db, transactionReferenceRates, snapshotReferenceRateValues(id, snapshot), current));
     }
 
     const priorRates = referenceRatesByTransaction.get(id);
@@ -778,13 +954,13 @@ export async function syncSpaceData(
           set: { transactionId: sql`excluded.transaction_id`, updatedAt: sql`excluded.updated_at` },
         }),
     );
-    const synced = syncedTransactionById.get(id)!;
-    syncedTransactions.push({ localId, ...synced });
   }
 
-  if (writes.length > 0) {
+  let results: unknown[] = [];
+  // `writes[0]` es el bloqueo del espacio: sin nada más que escribir sobra.
+  if (writes.length > 1) {
     try {
-      await db.batch(writes as [never, ...never[]]);
+      results = await db.batch(writes as [never, ...never[]]) as unknown[];
     } catch (error) {
       // La resolución previa cubre reintentos y lotes ya existentes. Esta es
       // la última barrera para dos peticiones simultáneas que leyeron el
@@ -796,13 +972,151 @@ export async function syncSpaceData(
     }
   }
 
-  return {
-    categoryCount: payload.categories.length,
-    moneyAccountCount: moneyAccountRows.length,
-    recurringSeriesCount: payload.recurringSeries.length,
-    transactionCount: payload.transactions.length,
-    ...(syncedTransactions.length ? { transactions: syncedTransactions } : {}),
+  // El `RETURNING` de cada upsert dice, dentro de la misma transacción, si se
+  // aplicó la versión. Lo que se lee a continuación es solo para describir la
+  // versión canónica a quien envió la descartada.
+  const rejected = [...parents.values()].filter((parent) => {
+    const returned = results[parent.writeIndex];
+    return !(Array.isArray(returned) && returned.length > 0);
+  });
+  const canonical = await readCanonicalVersions(db, spaceId, rejected);
+  const rejectedKeys = new Set(rejected.map((parent) => `${parent.collection}:${parent.id}`));
+  const isRejected = (collection: SyncCollection, id: string) => rejectedKeys.has(`${collection}:${id}`);
+
+  const raced = new Set<string>();
+  const conflicts: SyncConflict[] = [];
+  const syncedTransactions: SyncedTransaction[] = [];
+  const idsByCollection: Record<SyncCollection, Map<string, string>> = {
+    categories: categoryIds,
+    moneyAccounts: accountIds,
+    recurringSeries: seriesIds,
+    transactions: transactionIds,
   };
+  for (const collection of ["categories", "moneyAccounts", "recurringSeries", "transactions"] as const) {
+    for (const row of payload[collection]) {
+      const localId = text(row.id);
+      const id = idsByCollection[collection].get(localId)!;
+      if (!isRejected(collection, id)) continue;
+      const stored = canonical.get(`${collection}:${id}`);
+      const incoming = parents.get(`${collection}:${id}`)!.updatedAt;
+      if (collection === "transactions" && stored?.inSpace && stored.updatedAt <= incoming && preservedRateIds.has(id)) {
+        raced.add(localId);
+        continue;
+      }
+      conflicts.push({
+        collection,
+        localId,
+        remoteId: id,
+        reason: stored?.inSpace ? "NEWER_VERSION" : "NOT_IN_SPACE",
+        serverUpdatedAt: stored?.inSpace ? stored.updatedAt.toISOString() : null,
+      });
+    }
+  }
+
+  for (const row of payload.transactions) {
+    const localId = text(row.id);
+    const id = transactionIds.get(localId)!;
+    if (!isRejected("transactions", id)) {
+      syncedTransactions.push({ localId, applied: true, ...syncedTransactionById.get(id)! });
+      continue;
+    }
+    const stored = canonical.get(`transactions:${id}`);
+    syncedTransactions.push(
+      stored?.inSpace
+        ? {
+            localId,
+            applied: false,
+            remoteId: id,
+            updatedAt: stored.updatedAt.toISOString(),
+            accountingAmountMinorUsd: stored.accountingAmountMinorUsd?.toString() ?? null,
+            exchangeSnapshot: exchangeSnapshotFromRows(stored.rates, stored.currency ?? ""),
+          }
+        : { localId, applied: false, remoteId: id, updatedAt: null, accountingAmountMinorUsd: null, exchangeSnapshot: null },
+    );
+  }
+
+  return {
+    raced,
+    result: {
+      categoryCount: payload.categories.length,
+      moneyAccountCount: moneyAccountRows.length,
+      recurringSeriesCount: payload.recurringSeries.length,
+      transactionCount: payload.transactions.length,
+      ...(syncedTransactions.length ? { transactions: syncedTransactions } : {}),
+      ...(conflicts.length ? { conflicts } : {}),
+    },
+  };
+}
+
+type CanonicalVersion = {
+  updatedAt: Date;
+  inSpace: boolean;
+  accountingAmountMinorUsd?: bigint | null;
+  currency?: string;
+  rates?: (typeof transactionReferenceRates.$inferSelect)[];
+};
+
+/** Estado actual de las filas cuya versión enviada no se aplicó. */
+async function readCanonicalVersions(
+  db: Database,
+  spaceId: string,
+  rejected: { collection: SyncCollection; table: VersionedTable; id: string }[],
+): Promise<Map<string, CanonicalVersion>> {
+  const canonical = new Map<string, CanonicalVersion>();
+  if (!rejected.length) return canonical;
+
+  for (const collection of ["categories", "moneyAccounts", "recurringSeries"] as const) {
+    const group = rejected.filter((parent) => parent.collection === collection);
+    if (!group.length) continue;
+    const table = group[0]!.table;
+    const rows = await db
+      .select({ id: table.id, spaceId: table.spaceId, updatedAt: table.updatedAt })
+      .from(table)
+      .where(inArray(table.id, group.map((parent) => parent.id)));
+    for (const row of rows) {
+      canonical.set(`${collection}:${row.id}`, { updatedAt: row.updatedAt, inSpace: row.spaceId === spaceId });
+    }
+  }
+
+  const transactionIds = rejected.filter((parent) => parent.collection === "transactions").map((parent) => parent.id);
+  if (transactionIds.length) {
+    const [rows, rates] = await Promise.all([
+      db
+        .select({
+          id: transactions.id,
+          spaceId: transactions.spaceId,
+          updatedAt: transactions.updatedAt,
+          accountingAmountMinorUsd: transactions.accountingAmountMinorUsd,
+          currency: transactions.currency,
+        })
+        .from(transactions)
+        .where(inArray(transactions.id, transactionIds)),
+      db.select().from(transactionReferenceRates).where(inArray(transactionReferenceRates.transactionId, transactionIds)),
+    ]);
+    for (const row of rows) {
+      // Nunca se describe una fila de otro espacio: solo se marca como ajena.
+      canonical.set(
+        `transactions:${row.id}`,
+        row.spaceId === spaceId
+          ? {
+              updatedAt: row.updatedAt,
+              inSpace: true,
+              accountingAmountMinorUsd: row.accountingAmountMinorUsd,
+              currency: row.currency,
+              rates: rates.filter((rate) => rate.transactionId === row.id),
+            }
+          : { updatedAt: row.updatedAt, inSpace: false },
+      );
+    }
+  }
+  return canonical;
+}
+
+const BUDGET_SCHEDULE_FIELDS = ["period", "intervalDays", "anchorOn", "overrides", "history"] as const;
+
+/** Los clientes anteriores a la migración 0033 no envían ninguno de estos campos. */
+function hasBudgetSchedule(budget: Row): boolean {
+  return BUDGET_SCHEDULE_FIELDS.some((field) => budget[field] !== undefined);
 }
 
 function customRateIdValue(value: unknown): string | null | undefined {
@@ -894,6 +1208,10 @@ function validateSyncedCategory(row: Row, index: number): void {
       if (currencies.has(currency)) throw syncIssue("INVALID_SYNC_PAYLOAD", ["categories", index, "budgets", budgetIndex, "currency"], "DUPLICATE_CURRENCY", row, "category");
       currencies.add(currency);
       nonNegativeInteger(value.budgetAmountMinor, ["categories", index, "budgets", budgetIndex, "budgetAmountMinor"], row, "category");
+      const schedule = parseCategoryBudgetSchedule(value);
+      if (isCategoryBudgetScheduleIssue(schedule)) {
+        throw syncIssue("INVALID_SYNC_PAYLOAD", ["categories", index, "budgets", budgetIndex, ...schedule.path], schedule.reason, row, "category");
+      }
     }
   }
 }

@@ -6,7 +6,7 @@ import { syncSpaceData, type SpaceSyncPayload } from "../src/services/space-sync
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const NOW = "2026-08-29T10:00:00.000Z";
 
-type Captured = { table: string; op: "insert" | "delete"; values?: Record<string, unknown> };
+type Captured = { table: string; op: "insert" | "delete" | "update"; values?: Record<string, unknown> };
 
 /** Doble del driver que responde por tabla para tolerar preflight en paralelo. */
 function fakeDatabase(existing: {
@@ -20,7 +20,17 @@ function fakeDatabase(existing: {
   referenceRates?: unknown[];
 } = {}) {
   const captured: Captured[] = [];
-  const batch = vi.fn().mockResolvedValue([]);
+  // Por defecto cada sentencia "devuelve una fila": todas las versiones se
+  // aplican. Las pruebas de conflicto reales viven en integración.
+  const batch = vi.fn(async (writes: unknown[]) => {
+    // `insertWhen` (INSERT ... SELECT condicionado) expone sus filas.
+    for (const write of writes as { gatedInsert?: { table: string; rows: Record<string, unknown>[] } }[]) {
+      for (const values of write.gatedInsert?.rows ?? []) {
+        captured.push({ table: write.gatedInsert!.table, op: "insert", values });
+      }
+    }
+    return writes.map(() => [{ id: "applied" }]);
+  });
 
   const db = {
     select: (selection?: Record<string, unknown>) => ({
@@ -53,9 +63,19 @@ function fakeDatabase(existing: {
           return { ...builder, onConflictDoUpdate: () => builder };
         },
         onConflictDoUpdate: () => builder,
+        returning: () => builder,
       };
       return builder;
     },
+    execute: () => ({}),
+    update: (table: Parameters<typeof getTableName>[0]) => ({
+      set: () => ({
+        where: () => {
+          captured.push({ table: getTableName(table), op: "update" });
+          return {};
+        },
+      }),
+    }),
     delete: (table: Parameters<typeof getTableName>[0]) => ({
       where: () => {
         captured.push({ table: getTableName(table), op: "delete" });
@@ -258,6 +278,55 @@ describe("space bulk sync", () => {
       expect.objectContaining({ currency: "EUR", budgetAmountMinor: 30000n, createdBy: "user-1" }),
       expect.objectContaining({ currency: "USD", budgetAmountMinor: 25000n, createdBy: "user-1" }),
     ]);
+  });
+
+  it("persists the budget schedule and per-period overrides", async () => {
+    const { db, captured } = fakeDatabase();
+
+    await syncSpaceData(db, SPACE, "user-1", payload({
+      categories: [category({
+        budgetMinor: 30000,
+        budgets: [
+          {
+            currency: "EUR",
+            budgetAmountMinor: 30000,
+            period: "custom",
+            intervalDays: 10,
+            anchorOn: "2026-08-01",
+            overrides: [{ periodStartOn: "2026-08-11", budgetAmountMinor: 45000 }],
+            history: [{ endsOn: "2026-07-31", budgetAmountMinor: 20000, period: "month", intervalDays: null, anchorOn: null }],
+          },
+          { currency: "USD", budgetAmountMinor: 25000 },
+        ],
+      })],
+    }));
+
+    expect(rowsFor(captured, "category_budgets").map((entry) => entry.values)).toEqual([
+      expect.objectContaining({
+        currency: "EUR",
+        period: "custom",
+        intervalDays: 10,
+        anchorOn: "2026-08-01",
+        overrides: [{ periodStartOn: "2026-08-11", budgetAmountMinor: "45000" }],
+        history: [{ endsOn: "2026-07-31", budgetAmountMinor: "20000", period: "month", intervalDays: null, anchorOn: null }],
+      }),
+      // Sin campos de periodicidad (cliente anterior a 0033) solo viaja el
+      // importe: el upsert conserva la periodicidad guardada o nace mensual.
+      { categoryId: expect.any(String), currency: "USD", budgetAmountMinor: 25000n, createdBy: "user-1" },
+    ]);
+  });
+
+  it("rejects a custom budget period without a valid interval", async () => {
+    const { db } = fakeDatabase();
+
+    await expect(syncSpaceData(db, SPACE, "user-1", payload({
+      categories: [category({
+        budgets: [{ currency: "EUR", budgetAmountMinor: 30000, period: "custom", intervalDays: 1, anchorOn: "2026-08-01" }],
+      })],
+    }))).rejects.toMatchObject({
+      apiCode: "INVALID_SYNC_PAYLOAD",
+      issue: { path: ["categories", 0, "budgets", 0, "intervalDays"] },
+    });
   });
 
   it("stores the note and the custom recurrence group of a transaction", async () => {
@@ -965,5 +1034,33 @@ describe("space bulk sync", () => {
 
     expect(rowsFor(captured, "categories")[0]?.values?.createdBy).toBe("syncing-user");
     expect(rowsFor(captured, "transactions")[0]?.values?.createdBy).toBe("syncing-user");
+  });
+});
+
+describe("syncSpaceData transient database conflicts", () => {
+  const deadlock = (code: string) => Object.assign(new Error("deadlock detected"), { name: "NeonDbError", code });
+
+  it("retries the whole batch once after a deadlock: nothing was committed", async () => {
+    const { db, batch } = fakeDatabase();
+    batch.mockRejectedValueOnce(deadlock("40P01"));
+
+    await expect(syncSpaceData(db, SPACE, "user-1", payload({ categories: [category()] }))).resolves.toBeDefined();
+    expect(batch).toHaveBeenCalledTimes(2);
+  });
+
+  it("answers SYNC_CONCURRENT_UPDATE when the conflict persists", async () => {
+    const { db, batch } = fakeDatabase();
+    batch.mockRejectedValue(deadlock("40001"));
+
+    await expect(syncSpaceData(db, SPACE, "user-1", payload({ categories: [category()] }))).rejects.toThrow("SYNC_CONCURRENT_UPDATE");
+    expect(batch).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry other database errors", async () => {
+    const { db, batch } = fakeDatabase();
+    batch.mockRejectedValue(Object.assign(new Error("boom"), { code: "23503" }));
+
+    await expect(syncSpaceData(db, SPACE, "user-1", payload({ categories: [category()] }))).rejects.toMatchObject({ code: "23503" });
+    expect(batch).toHaveBeenCalledTimes(1);
   });
 });

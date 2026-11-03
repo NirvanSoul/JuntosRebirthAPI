@@ -1,5 +1,6 @@
 import { and, desc, eq, inArray, isNull, lt, or } from "drizzle-orm";
 import type { Database } from "../db/client";
+import { insertWhen, spaceWriteLock, versionIsCurrent } from "../db/versioned-writes";
 import {
   categories,
   moneyAccountBalances,
@@ -181,12 +182,16 @@ export async function createTransaction(
   // autor — el bug real detrás de "el movimiento se le atribuye a otro
   // usuario" en un espacio compartido.
   const accountingAmountMinorUsd = accountingUsd(input.amountMinor, input.currency, snapshotResult.snapshot);
-  const [row] = await db
+  // Movimiento y tasas congeladas en una sola transacción: si las tasas no se
+  // pueden escribir, no queda un movimiento con equivalencia USD y sin tasas.
+  const id = crypto.randomUUID();
+  const insert = db
     .insert(transactions)
-    .values({ ...transactionInput, createdBy: userId, recurrenceSeriesId: null, accountingAmountMinorUsd })
+    .values({ ...transactionInput, id, createdBy: userId, recurrenceSeriesId: null, accountingAmountMinorUsd })
     .returning(selectFields());
-
-  if (snapshotResult.snapshot) await insertReferenceRateRows(db, row.id, snapshotResult.snapshot);
+  const [[row]] = snapshotResult.snapshot
+    ? await db.batch([insert, db.insert(transactionReferenceRates).values(snapshotReferenceRateValues(id, snapshotResult.snapshot))])
+    : [await insert];
 
   return { transaction: { ...serialize(row), exchangeSnapshot: snapshotToDTO(snapshotResult.snapshot) } };
 }
@@ -198,7 +203,7 @@ function accountingUsd(amountMinor: bigint, currency: string, snapshot: Movement
   return row?.convertedAmountMinor ?? null;
 }
 
-export type UpdateTransactionResult = { transaction: TransactionResponse | null; error?: "CUSTOM_RATE_NOT_FOUND" | "VENEZUELA_RATES_UNAVAILABLE" };
+export type UpdateTransactionResult = { transaction: TransactionResponse | null; error?: "CUSTOM_RATE_NOT_FOUND" | "VENEZUELA_RATES_UNAVAILABLE" | "SYNC_CONCURRENT_UPDATE" };
 
 export async function updateTransaction(
   db: Database,
@@ -213,13 +218,22 @@ export async function updateTransaction(
   if (input.isArchived !== undefined) { values.isArchived = input.isArchived; values.archivedAt = input.isArchived ? new Date() : null; }
 
   const refreezeSnapshot = input.amountMinor !== undefined || input.currency !== undefined || input.occurredOn !== undefined || input.customRateId !== undefined;
+  const where = and(eq(transactions.id, input.transactionId), eq(transactions.spaceId, input.spaceId));
 
-  // No mutar antes de poder congelar la equivalencia USD: una tasa caída o un
-  // CUSTOM inválido debe dejar el movimiento exactamente como estaba.
-  let preparedSnapshot: MovementSnapshot | null = null;
-  if (refreezeSnapshot) {
-    const [current] = await db.select(selectFields()).from(transactions)
-      .where(and(eq(transactions.id, input.transactionId), eq(transactions.spaceId, input.spaceId)));
+  if (!refreezeSnapshot) {
+    const [row] = await db.update(transactions).set(values).where(where).returning(selectFields());
+    if (!row) return { transaction: null };
+    const [enriched] = await attachExchangeSnapshots(db, [serialize(row)]);
+    return { transaction: enriched };
+  }
+
+  // La equivalencia USD se calcula con el importe y la moneda leídos antes del
+  // batch. Si otra escritura los cambia entre medias, el UPDATE no aplica y se
+  // vuelve a leer: nunca se guardan tasas de un importe que ya no es el vigente.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    // No mutar antes de poder congelar la equivalencia USD: una tasa caída o un
+    // CUSTOM inválido debe dejar el movimiento exactamente como estaba.
+    const [current] = await db.select(selectFields()).from(transactions).where(where);
     if (!current) return { transaction: null };
     const amountMinor = input.amountMinor ?? current.amountMinor;
     const currency = input.currency ?? current.currency;
@@ -227,30 +241,26 @@ export async function updateTransaction(
       ? await buildMovementSnapshot(db, { userId: input.userId, amountMinor, currency, customRateId: input.customRateId })
       : { snapshot: null as MovementSnapshot | null };
     if (snapshotResult.error) return { transaction: null, error: snapshotResult.error };
-    preparedSnapshot = snapshotResult.snapshot;
-    values.accountingAmountMinorUsd = accountingUsd(amountMinor, currency, preparedSnapshot);
+    const snapshot = snapshotResult.snapshot;
+
+    const updatedAt = new Date();
+    const versionWritten = versionIsCurrent(transactions, input.transactionId, input.spaceId, updatedAt);
+    const [, [row]] = await db.batch([
+      spaceWriteLock(db, input.spaceId),
+      db.update(transactions)
+        .set({ ...values, updatedAt, accountingAmountMinorUsd: accountingUsd(amountMinor, currency, snapshot) })
+        .where(and(where, eq(transactions.amountMinor, current.amountMinor), eq(transactions.currency, current.currency)))
+        .returning(selectFields()),
+      db.delete(transactionReferenceRates).where(and(eq(transactionReferenceRates.transactionId, input.transactionId), versionWritten)),
+      ...(snapshot ? [insertWhen(db, transactionReferenceRates, snapshotReferenceRateValues(input.transactionId, snapshot), versionWritten)] : []),
+    ]);
+    if (row) return { transaction: { ...serialize(row), exchangeSnapshot: snapshotToDTO(snapshot) } };
   }
-
-  const [row] = await db.update(transactions).set(values).where(and(eq(transactions.id, input.transactionId), eq(transactions.spaceId, input.spaceId))).returning(selectFields());
-  if (!row) return { transaction: null };
-
-  if (!refreezeSnapshot) {
-    const [enriched] = await attachExchangeSnapshots(db, [serialize(row)]);
-    return { transaction: enriched };
-  }
-
-  await db.delete(transactionReferenceRates).where(eq(transactionReferenceRates.transactionId, row.id));
-  if (preparedSnapshot) await insertReferenceRateRows(db, row.id, preparedSnapshot);
-
-  return { transaction: { ...serialize(row), exchangeSnapshot: snapshotToDTO(preparedSnapshot) } };
+  return { transaction: null, error: "SYNC_CONCURRENT_UPDATE" };
 }
 
 function shouldAttemptSnapshot(currency: string, creatorCountryCode: string | null): boolean {
   return creatorCountryCode === "VE" && (currency === "VES" || currency === "USD");
-}
-
-async function insertReferenceRateRows(db: Database, transactionId: string, snapshot: MovementSnapshot) {
-  await db.insert(transactionReferenceRates).values(snapshotReferenceRateValues(transactionId, snapshot));
 }
 
 /** Valores de persistencia comunes a rutas directas y sincronización offline. */

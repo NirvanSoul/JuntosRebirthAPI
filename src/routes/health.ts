@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { logFailure } from "../lib/log";
 import { sql } from "drizzle-orm";
 import { createDb } from "../db/client";
 import { inspectConfig } from "../lib/config";
@@ -59,6 +60,14 @@ healthRoute.get("/health/db", async (c) => {
           WHERE table_schema = 'public'
             AND table_name = 'transactions'
             AND column_name = 'accounting_amount_minor_usd'
+        )
+        -- Migraciones 0033 y 0034: periodicidad e historial de presupuestos.
+        AND EXISTS (
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'category_budgets'
+            AND column_name = 'history'
         ) AS schema_current
     `);
     const rows = Array.isArray(result) ? result : result.rows;
@@ -75,7 +84,7 @@ healthRoute.get("/health/db", async (c) => {
       200
     );
   } catch (error) {
-    console.error("Database connection error:", error);
+    logFailure("health.db", error);
     return c.json(
       {
         status: "error",

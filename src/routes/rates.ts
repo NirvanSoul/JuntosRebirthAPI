@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { logFailure } from "../lib/log";
 import { errorResponse } from "../lib/http";
 import { VenezuelaRateService } from "../services/rates/venezuela";
 import type { Bindings } from "../types/env";
@@ -14,12 +15,7 @@ ratesRoute.get("/venezuela", async (c) => {
     // Tragarse el motivo es justo lo que escondió durante semanas el fallo del
     // motor de recurrencias: el cliente ve un 502 opaco, pero el log dice cuál
     // de las cuatro comprobaciones del proveedor falló.
-    const cause = error instanceof Error ? error.cause : undefined;
-    console.error(
-      "Venezuela rates failed:",
-      error instanceof Error ? error.message : String(error),
-      cause instanceof Error ? `| cause: ${cause.message}` : "",
-    );
+    logFailure("venezuela_rates", error);
     return errorResponse(c, "VENEZUELA_RATES_UNAVAILABLE");
   }
 });

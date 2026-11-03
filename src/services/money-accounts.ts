@@ -1,7 +1,8 @@
-import { and, eq, isNull, isNotNull, notExists, sql } from "drizzle-orm";
+import { and, eq, exists, isNull, isNotNull, notExists, sql } from "drizzle-orm";
 import { type Database } from "../db/client";
 import { moneyAccountBalances, moneyAccounts, transactions, recurringTransactionSeries, spaces } from "../db/schema";
 import { serializeMinorAmount } from "../lib/money";
+import { bumpVersion, spaceWriteLockOf } from "../db/versioned-writes";
 
 export type BalanceResponse = { currency: string; openingBalanceMinor: string; currentBalanceMinor: string; displayOrder: number };
 export type MoneyAccountResponse = { id: string; name: string; kind: "cash" | "bank" | "card"; icon: string | null; colorToken: string | null; primaryCurrency: string; createdBy: string | null; createdAt: Date; balances: BalanceResponse[] };
@@ -70,8 +71,29 @@ export async function updateMoneyAccount(db: Database, input: {spaceId:string;ac
 }
 
 export async function hasBalanceCurrency(db: Database, accountId: string, currency: string) { const [row] = await db.select({id:moneyAccountBalances.id}).from(moneyAccountBalances).where(and(eq(moneyAccountBalances.moneyAccountId,accountId),eq(moneyAccountBalances.currency,currency))); return Boolean(row); }
-export async function upsertBalance(db: Database, input:{accountId:string;currency:string;openingBalanceMinor:bigint;displayOrder:number}) { const [row] = await db.insert(moneyAccountBalances).values({moneyAccountId:input.accountId,currency:input.currency,openingBalanceMinor:input.openingBalanceMinor,displayOrder:input.displayOrder}).onConflictDoUpdate({target:[moneyAccountBalances.moneyAccountId,moneyAccountBalances.currency],set:{openingBalanceMinor:input.openingBalanceMinor,displayOrder:input.displayOrder,updatedAt:new Date()}}).returning({currency:moneyAccountBalances.currency,openingBalanceMinor:moneyAccountBalances.openingBalanceMinor,displayOrder:moneyAccountBalances.displayOrder}); return {currency:row.currency,openingBalanceMinor:serializeMinorAmount(row.openingBalanceMinor),displayOrder:row.displayOrder}; }
+/**
+ * Un saldo es parte de la cuenta para la sincronización: cambiarlo por REST es
+ * una versión nueva de la cuenta (sale por `/v1/sync/changes` y gana a un push
+ * con la versión anterior). Bloqueo del espacio, padre y luego hijo, en un
+ * solo batch, como en el push.
+ */
+export async function upsertBalance(db: Database, input:{accountId:string;currency:string;openingBalanceMinor:bigint;displayOrder:number}) { const [, , [row]] = await db.batch([spaceWriteLockOf(db, moneyAccounts, input.accountId), bumpVersion(db, moneyAccounts, input.accountId), db.insert(moneyAccountBalances).values({moneyAccountId:input.accountId,currency:input.currency,openingBalanceMinor:input.openingBalanceMinor,displayOrder:input.displayOrder}).onConflictDoUpdate({target:[moneyAccountBalances.moneyAccountId,moneyAccountBalances.currency],set:{openingBalanceMinor:input.openingBalanceMinor,displayOrder:input.displayOrder,updatedAt:new Date()}}).returning({currency:moneyAccountBalances.currency,openingBalanceMinor:moneyAccountBalances.openingBalanceMinor,displayOrder:moneyAccountBalances.displayOrder})]); return {currency:row.currency,openingBalanceMinor:serializeMinorAmount(row.openingBalanceMinor),displayOrder:row.displayOrder}; }
 export async function balanceHasTransactions(db: Database, accountId:string,currency:string) { const [row] = await db.select({id:transactions.id}).from(transactions).where(and(eq(transactions.moneyAccountId,accountId),eq(transactions.currency,currency),isNull(transactions.archivedAt))).limit(1); return Boolean(row); }
 export async function moneyAccountHasFutureRecurringSeries(db:Database,spaceId:string,accountId:string) { const [row]=await db.select({id:recurringTransactionSeries.id}).from(recurringTransactionSeries).where(and(eq(recurringTransactionSeries.spaceId,spaceId),eq(recurringTransactionSeries.moneyAccountId,accountId),eq(recurringTransactionSeries.isArchived,false),isNull(recurringTransactionSeries.archivedAt),isNotNull(recurringTransactionSeries.nextOccurrenceOn))).limit(1); return Boolean(row); }
 export async function balanceHasFutureRecurringSeries(db:Database,accountId:string,currency:string) { const [row]=await db.select({id:recurringTransactionSeries.id}).from(recurringTransactionSeries).where(and(eq(recurringTransactionSeries.moneyAccountId,accountId),eq(recurringTransactionSeries.currency,currency),eq(recurringTransactionSeries.isArchived,false),isNull(recurringTransactionSeries.archivedAt),isNotNull(recurringTransactionSeries.nextOccurrenceOn))).limit(1); return Boolean(row); }
-export async function deleteBalance(db:Database,accountId:string,currency:string) { const [row] = await db.delete(moneyAccountBalances).where(and(eq(moneyAccountBalances.moneyAccountId,accountId),eq(moneyAccountBalances.currency,currency),notExists(db.select({one:sql`1`}).from(transactions).where(and(eq(transactions.moneyAccountId,accountId),eq(transactions.currency,currency),eq(transactions.isArchived,false),isNull(transactions.archivedAt)))),notExists(db.select({one:sql`1`}).from(recurringTransactionSeries).where(and(eq(recurringTransactionSeries.moneyAccountId,accountId),eq(recurringTransactionSeries.currency,currency),eq(recurringTransactionSeries.isArchived,false),isNull(recurringTransactionSeries.archivedAt),isNotNull(recurringTransactionSeries.nextOccurrenceOn)))))).returning({id:moneyAccountBalances.id}); return Boolean(row); }
+/**
+ * Borra el saldo solo si nada lo usa y, en la misma sentencia, avanza la
+ * versión de la cuenta solo si de verdad se borró (antes también la avanzaba
+ * para un saldo inexistente, republicando la cuenta sin cambios).
+ */
+export async function deleteBalance(db:Database,accountId:string,currency:string) {
+  const deleted = db.$with("deleted").as(db.delete(moneyAccountBalances).where(and(eq(moneyAccountBalances.moneyAccountId,accountId),eq(moneyAccountBalances.currency,currency),notExists(db.select({one:sql`1`}).from(transactions).where(and(eq(transactions.moneyAccountId,accountId),eq(transactions.currency,currency),eq(transactions.isArchived,false),isNull(transactions.archivedAt)))),notExists(db.select({one:sql`1`}).from(recurringTransactionSeries).where(and(eq(recurringTransactionSeries.moneyAccountId,accountId),eq(recurringTransactionSeries.currency,currency),eq(recurringTransactionSeries.isArchived,false),isNull(recurringTransactionSeries.archivedAt),isNotNull(recurringTransactionSeries.nextOccurrenceOn)))))).returning({id:moneyAccountBalances.id}));
+  const [, [row]] = await db.batch([
+    spaceWriteLockOf(db, moneyAccounts, accountId),
+    db.with(deleted).update(moneyAccounts)
+      .set({ updatedAt: sql`GREATEST(${moneyAccounts.updatedAt} + interval '1 millisecond', now())` })
+      .where(and(eq(moneyAccounts.id, accountId), exists(db.select({ one: sql`1` }).from(deleted))))
+      .returning({ id: moneyAccounts.id }),
+  ]);
+  return Boolean(row);
+}

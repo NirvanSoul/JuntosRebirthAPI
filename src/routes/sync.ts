@@ -1,7 +1,8 @@
 import { Hono, type MiddlewareHandler } from "hono";
 import { createDb } from "../db/client";
 import { errorResponse, type ErrorCode } from "../lib/http";
-import { databaseErrorResponse, isDatabaseSchemaOutdated, logDatabaseFailure } from "../lib/database-errors";
+import { databaseErrorResponse, isDatabaseSchemaOutdated, isTransientConcurrencyFailure, logDatabaseFailure } from "../lib/database-errors";
+import { logFailure } from "../lib/log";
 import { isDataViolation } from "../lib/pg";
 import { parseBody } from "../lib/validation";
 import type { AuthVariables } from "../middleware/auth";
@@ -33,6 +34,7 @@ const CLIENT_ERRORS: Record<string, ErrorCode> = {
   VENEZUELA_RATES_UNAVAILABLE: "VENEZUELA_RATES_UNAVAILABLE",
   VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED: "VE_ACCOUNT_MULTI_CURRENCY_NOT_ALLOWED",
   RECURRENCE_OCCURRENCE_CONFLICT: "RECURRENCE_OCCURRENCE_CONFLICT",
+  SYNC_CONCURRENT_UPDATE: "SYNC_CONCURRENT_UPDATE",
   SPACE_NOT_FOUND: "SPACE_NOT_FOUND",
 };
 
@@ -159,20 +161,13 @@ export function createSpaceSyncRoute(
           details: { path: error.issue.path, reason: error.issue.reason },
         });
       }
-      logDatabaseFailure("sync.space", error);
-      console.error(
-        "Space sync failed:",
-        error?.message,
-        JSON.stringify({
-          detail: error?.detail,
-          constraint: error?.constraint,
-          code: error?.code,
-          hint: error?.hint,
-          where: error?.where,
-        }),
-      );
+      // `detail`, `hint`, `where` y el mensaje de PostgreSQL pueden contener
+      // valores de la fila (importes, nombres, correos): solo se registran
+      // SQLSTATE, restricción y la correlación de la petición.
+      logFailure("sync.space", error, { requestId, spaceId: c.req.param("spaceId") });
       const reason = error instanceof Error ? error.message : "";
-      const code = CLIENT_ERRORS[reason];
+      // Un interbloqueo/fallo de serialización no confirmó nada: reintentable.
+      const code = isTransientConcurrencyFailure(error) ? "SYNC_CONCURRENT_UPDATE" : CLIENT_ERRORS[reason];
       if (isDatabaseSchemaOutdated(error)) {
         return databaseErrorResponse(c, error);
       }

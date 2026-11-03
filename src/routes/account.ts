@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { logFailure } from "../lib/log";
 import { errorResponse } from "../lib/http";
 import { databaseErrorResponse, logDatabaseFailure } from "../lib/database-errors";
 import { boundedString, nullableString, parseBody } from "../lib/validation";
@@ -142,7 +143,7 @@ export function createAccountRoute(deps: Dependencies = defaults) {
       );
       return c.json({ data });
     } catch (error) {
-      console.error("Account export failed:", error);
+      logFailure("account_export", error);
       return errorResponse(c, "INTERNAL_SERVER_ERROR");
     }
   });
@@ -160,7 +161,7 @@ export function createAccountRoute(deps: Dependencies = defaults) {
       await deps.deleteAccount(deps.createDb(c.env.DATABASE_URL), userId);
       return c.body(null, 204);
     } catch (error) {
-      console.error("Account deletion failed:", error);
+      logFailure("account_deletion", error);
       return errorResponse(c, "INTERNAL_SERVER_ERROR");
     }
   });
@@ -177,7 +178,7 @@ export function createAccountRoute(deps: Dependencies = defaults) {
       await deps.deleteAccountData(deps.createDb(c.env.DATABASE_URL), userId);
       return c.body(null, 204);
     } catch (error) {
-      console.error("Account data deletion failed:", error);
+      logFailure("account_data_deletion", error);
       return errorResponse(c, "INTERNAL_SERVER_ERROR");
     }
   });

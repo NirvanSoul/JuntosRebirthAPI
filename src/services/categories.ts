@@ -1,5 +1,6 @@
 import { and, asc, eq, isNull, isNotNull } from "drizzle-orm";
 import { type Database } from "../db/client";
+import { bumpVersion, spaceWriteLockOf } from "../db/versioned-writes";
 import { categoryBudgets, categories, recurringTransactionSeries } from "../db/schema";
 import { serializeMinorAmount } from "../lib/money";
 
@@ -203,6 +204,9 @@ export async function updateCategory(
   return category ? { ...category, budgets: [] } : null;
 }
 
+// Un presupuesto es parte de la categoría para la sincronización: cambiarlo
+// por REST es una versión nueva de la categoría (`bumpVersion`). El bloqueo
+// del espacio va primero y el padre antes que el hijo, como en el push.
 export async function upsertCategoryBudget(
   db: Database,
   input: {
@@ -212,25 +216,30 @@ export async function upsertCategoryBudget(
     budgetAmountMinor: bigint;
   },
 ) {
-  const [budget] = await db
-    .insert(categoryBudgets)
-    .values({
-      categoryId: input.categoryId,
-      currency: input.currency,
-      budgetAmountMinor: input.budgetAmountMinor,
-      createdBy: input.userId,
-    })
-    .onConflictDoUpdate({
-      target: [categoryBudgets.categoryId, categoryBudgets.currency],
-      set: {
+  const [, , [budget]] = await db.batch([
+    spaceWriteLockOf(db, categories, input.categoryId),
+    bumpVersion(db, categories, input.categoryId),
+    db
+      .insert(categoryBudgets)
+      .values({
+        categoryId: input.categoryId,
+        currency: input.currency,
         budgetAmountMinor: input.budgetAmountMinor,
-        updatedAt: new Date(),
-      },
-    })
-    .returning({
-      currency: categoryBudgets.currency,
-      budgetAmountMinor: categoryBudgets.budgetAmountMinor,
-    });
+        createdBy: input.userId,
+      })
+      // Solo el importe: la periodicidad que haya puesto la app se conserva.
+      .onConflictDoUpdate({
+        target: [categoryBudgets.categoryId, categoryBudgets.currency],
+        set: {
+          budgetAmountMinor: input.budgetAmountMinor,
+          updatedAt: new Date(),
+        },
+      })
+      .returning({
+        currency: categoryBudgets.currency,
+        budgetAmountMinor: categoryBudgets.budgetAmountMinor,
+      }),
+  ]);
 
   return {
     currency: budget.currency,
@@ -243,14 +252,18 @@ export async function deleteCategoryBudget(
   categoryId: string,
   currency: string,
 ) {
-  await db
-    .delete(categoryBudgets)
-    .where(
-      and(
-        eq(categoryBudgets.categoryId, categoryId),
-        eq(categoryBudgets.currency, currency),
+  await db.batch([
+    spaceWriteLockOf(db, categories, categoryId),
+    bumpVersion(db, categories, categoryId),
+    db
+      .delete(categoryBudgets)
+      .where(
+        and(
+          eq(categoryBudgets.categoryId, categoryId),
+          eq(categoryBudgets.currency, currency),
+        ),
       ),
-    );
+  ]);
 }
 
 export async function categoryHasFutureRecurringSeries(db: Database, spaceId: string, categoryId: string) {

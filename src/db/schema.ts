@@ -483,6 +483,20 @@ export const categories = pgTable(
   ],
 );
 
+export type CategoryBudgetOverride = {
+  periodStartOn: string;
+  budgetAmountMinor: string;
+};
+
+/** Tramo anterior del presupuesto: hasta `endsOn` rigió esta periodicidad. */
+export type CategoryBudgetSegment = {
+  endsOn: string;
+  budgetAmountMinor: string;
+  period: string;
+  intervalDays: number | null;
+  anchorOn: string | null;
+};
+
 export const categoryBudgets = pgTable(
   "category_budgets",
   {
@@ -492,6 +506,20 @@ export const categoryBudgets = pgTable(
       .references(() => categories.id, { onDelete: "cascade" }),
     currency: varchar("currency", { length: 3 }).notNull(),
     budgetAmountMinor: bigint("budget_amount_minor", { mode: "bigint" })
+      .notNull(),
+    /** `month`, `week`, `fortnight` o `custom` (cada `intervalDays` días). */
+    period: varchar("period", { length: 16 }).default("month").notNull(),
+    intervalDays: integer("interval_days"),
+    anchorOn: date("anchor_on"),
+    /** Importes de un único periodo: `[{ periodStartOn, budgetAmountMinor }]`. */
+    overrides: jsonb("overrides")
+      .$type<CategoryBudgetOverride[]>()
+      .default(sql`'[]'::jsonb`)
+      .notNull(),
+    /** Tramos anteriores ordenados por `endsOn`; el actual son las columnas. */
+    history: jsonb("history")
+      .$type<CategoryBudgetSegment[]>()
+      .default(sql`'[]'::jsonb`)
       .notNull(),
     createdBy: text("created_by").references(() => user.id, {
       onDelete: "set null",
@@ -508,6 +536,10 @@ export const categoryBudgets = pgTable(
     check(
       "category_budgets_budget_amount_minor_nonnegative",
       sql`${table.budgetAmountMinor} >= 0`,
+    ),
+    check(
+      "category_budgets_period_valid",
+      sql`(${table.period} IN ('month', 'week', 'fortnight') AND ${table.intervalDays} IS NULL AND ${table.anchorOn} IS NULL) OR (${table.period} = 'custom' AND ${table.intervalDays} BETWEEN 2 AND 365 AND ${table.anchorOn} IS NOT NULL)`,
     ),
     uniqueIndex("category_budgets_category_currency_idx").on(
       table.categoryId,

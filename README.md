@@ -73,8 +73,33 @@ juntoss-api/
   npm run test:integration
   ```
 
-  Requiere `DATABASE_URL` en `.dev.vars`; no se ejecuta como parte de la suite
-  unitaria para evitar tocar una base remota accidentalmente.
+  Por defecto arranca un **PostgreSQL 17 local y efímero** (`embedded-postgres`)
+  en un directorio temporal, aplica todas las migraciones con el mismo migrador
+  que producción y lo destruye al terminar. El código de la API usa su driver
+  real (`drizzle-orm/neon-http`): `test/integration/node/neon-local-fetch.mjs`
+  traduce sus peticiones HTTP a ese PostgreSQL, conservando que cada `db.batch`
+  sea una transacción. Ese puente se niega a hablar con cualquier host que no
+  sea de bucle local.
+
+  **Nunca usa `DATABASE_URL` de `.dev.vars`**, que puede ser producción. Para
+  correr contra una base remota (p. ej. una rama Neon desechable):
+
+  1. créala aparte y marca la base como desechable, una sola vez:
+     ```sql
+     CREATE TABLE juntos_integration_marker (
+       disposable boolean NOT NULL CHECK (disposable),
+       note text NOT NULL,
+       created_at timestamptz NOT NULL DEFAULT now()
+     );
+     INSERT INTO juntos_integration_marker (disposable, note) VALUES (true, 'rama de pruebas');
+     ```
+  2. ejecuta `DATABASE_URL_TEST=<url> npm run test:integration`.
+
+  El arnés rechaza la URL si apunta al mismo host/puerto/base que la
+  `DATABASE_URL` de la aplicación (entorno o `.dev.vars`) o si no tiene la
+  marca. Cada prueba crea usuarios `itest-*` y solo borra lo suyo; los
+  agregados de comercios se recalculan únicamente para las claves que votaron
+  esos usuarios.
 
 ## Despliegue en Cloudflare Workers
 
@@ -86,6 +111,16 @@ directamente, porque omite ese paso:
 ```bash
 npm run deploy:production
 ```
+
+El orden migrar → Worker es obligatorio para 0033/0034 (presupuestos con
+periodicidad): ver `SYNC_CONFLICTS_AND_BUDGETS_2026-11-02.md` para el plan de
+despliegue, compatibilidad y recuperación. `/health/db` responde
+`schema_outdated` si falta `category_budgets.history`.
+
+Los logs nunca incluyen el mensaje, `detail`, `hint` ni `where` de un error de
+base de datos (pueden llevar valores de filas o credenciales): `logFailure`
+(`src/lib/log.ts`) registra operación, nombre, SQLSTATE, tabla/restricción y
+correlación (`requestId`).
 
 ## Cambio de país y espacios compartidos
 
@@ -108,6 +143,28 @@ La migración `0025_leave_shared_spaces_on_country_change` aplica la baja dentro
 de la misma transacción del cambio de perfil, impide reactivar membresías de
 otro país y repara las incompatibilidades históricas. Debe aplicarse mediante
 el flujo de despliegue oficial antes de publicar el Worker.
+
+Borrar la cuenta (`deleteAccount`) o los datos (`deleteAccountData`) siendo el
+único propietario de un espacio compartido aplica la misma sucesión. Cambiar
+roles, expulsar o salir bloquea antes la fila del espacio (`FOR NO KEY UPDATE`,
+compatible con el `FOR UPDATE` del cambio de país): dos propietarios que salen
+o se degradan a la vez no pueden dejar el espacio sin ninguno.
+
+## Motor de recurrencias
+
+El cron horario (y `POST .../recurring-transactions/run`) reclama cada
+ocurrencia y crea su movimiento en una transacción que toma primero el bloqueo
+del espacio, como el sync y las rutas REST:
+
+- si el movimiento de esa fecha ya existe (lo subió la app o un push rebobinó
+  el contador), la serie avanza y la ocurrencia personalizada se enlaza con él
+  (`existingTransactions`);
+- en Venezuela congela la equivalencia USD y las tasas del movimiento, igual
+  que `POST /transactions`; sin tasas disponibles la serie se aplaza
+  (`deferredSeries`) y se reintenta en la siguiente ejecución;
+- una serie personalizada que apunta a una fecha sin ocurrencia pendiente se
+  recoloca (`repairedSeries`). Añadir o editar ocurrencias recalcula esa fecha
+  en SQL dentro de la misma transacción.
 
 ## Sincronización de tasas Venezuela
 
@@ -212,6 +269,84 @@ la moneda exacta de cada `convertedAmountMinor`. Movimientos legacy sin
 referencias devuelven
 `exchangeSnapshot: null`.
 
+
+## Conflictos en `POST /v1/spaces/:spaceId/sync`
+
+Cada fila (categoría, cuenta, serie, movimiento) se resuelve por última
+escritura con el `updatedAt` del cliente: una versión igual o posterior a la
+guardada se aplica; una anterior se descarta. La decisión la toma el propio
+`INSERT ... ON CONFLICT DO UPDATE ... RETURNING` dentro del `db.batch`
+(una transacción) y todas sus filas hijas se escriben condicionadas a ella:
+
+- presupuestos (`category_budgets`), saldos (`money_account_balances`) y tasas
+  congeladas (`transaction_reference_rates`) solo se borran o insertan si la
+  versión del padre quedó vigente; una versión descartada no toca nada;
+- el upsert bloquea la fila del padre hasta el commit, así que dos peticiones
+  concurrentes no pueden mezclar padre e hijos;
+- si un movimiento conserva sus tasas (no cambió importe, moneda ni fecha) y
+  otra petición cambió esos campos entretanto, el servidor lo reintenta con una
+  lectura nueva; si no converge en tres intentos responde `409
+  SYNC_CONCURRENT_UPDATE` (reintentable; lo ya confirmado es idempotente);
+- cada batch toma primero un bloqueo consultivo del espacio
+  (`src/db/versioned-writes.ts`): dos pushes del mismo espacio, o un push y una
+  escritura REST de presupuesto, saldo o movimiento, se serializan en vez de
+  interbloquearse. Si PostgreSQL aun así aborta por interbloqueo o
+  serialización (`40P01`/`40001`), el servidor repite el batch una vez y, si
+  persiste, responde el mismo `409 SYNC_CONCURRENT_UPDATE`.
+
+Las rutas REST `PUT/DELETE .../categories/:id/budgets/:currency` y
+`PUT/DELETE .../money-accounts/:id/balances/:currency` avanzan la versión
+(`updatedAt`) del padre en la misma transacción: el cambio sale por
+`/v1/sync/changes` y gana a un push posterior que traiga la versión anterior.
+`POST/PATCH .../transactions` escriben movimiento, equivalencia USD y tasas
+congeladas juntos o no escriben nada.
+
+Respuesta (`data`), compatible con clientes anteriores (solo añade campos):
+
+```json
+{
+  "categoryCount": 1, "moneyAccountCount": 1, "recurringSeriesCount": 0, "transactionCount": 1,
+  "transactions": [{
+    "localId": "…", "remoteId": "…", "applied": false,
+    "updatedAt": "2026-09-01T10:00:00.000Z",
+    "accountingAmountMinorUsd": "1000", "exchangeSnapshot": { "…": "…" }
+  }],
+  "conflicts": [{
+    "collection": "transactions", "localId": "…", "remoteId": "…",
+    "reason": "NEWER_VERSION", "serverUpdatedAt": "2026-09-01T10:00:00.000Z"
+  }]
+}
+```
+
+- `transactions[].applied` (nuevo, siempre presente): `true` si se guardó la
+  versión enviada. Con `false`, `updatedAt`, `accountingAmountMinorUsd` y
+  `exchangeSnapshot` son los **canónicos del servidor**, nunca los enviados.
+  Como `updatedAt` no coincide con el local, una app antigua que actualiza
+  `WHERE id = localId AND updated_at = updatedAt` no mezcla esos valores.
+- `conflicts` (nuevo, solo si hay alguno): cada versión descartada de
+  cualquier colección. `NEWER_VERSION` trae el `updatedAt` vigente;
+  `NOT_IN_SPACE` (id remoto de otro espacio, solo posible en una carrera) no
+  describe la fila ajena (`serverUpdatedAt: null`).
+- Para que también converja una app que ignore `conflicts` y marque la fila
+  como sincronizada, el servidor toca `server_updated_at` de la versión
+  canónica al descartar una vieja: vuelve a llegar por `/v1/sync/changes`.
+
+### Presupuestos de categoría
+
+`categories[].budgets[]` admite `currency`, `budgetAmountMinor` y, desde las
+migraciones 0033/0034, `period` (`month`/`week`/`fortnight`/`custom`),
+`intervalDays` y `anchorOn` (obligatorios con `custom`), `overrides`
+(`[{ periodStartOn, budgetAmountMinor }]`) e `history`
+(`[{ endsOn, budgetAmountMinor, period, intervalDays, anchorOn }]`). El array
+es el conjunto completo de monedas: las ausentes se retiran. Compatibilidad:
+
+- una entrada **sin ninguno** de esos cinco campos (cliente anterior) solo
+  cambia el importe y conserva la periodicidad guardada; si la moneda es nueva,
+  nace mensual;
+- `budgetMinor` (cliente más antiguo) actualiza el importe de la moneda del
+  espacio y conserva la periodicidad;
+- snapshot y changes devuelven siempre los cinco campos (`overrides` e
+  `history` con importes en string).
 
 ## Sincronización incremental (`GET /v1/sync/changes`)
 

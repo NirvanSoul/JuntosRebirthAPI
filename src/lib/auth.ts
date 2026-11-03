@@ -1,4 +1,5 @@
 import { betterAuth } from "better-auth";
+import { logFailure } from "./log";
 import { APIError, createAuthMiddleware } from "better-auth/api";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { emailOTP } from "better-auth/plugins/email-otp";
@@ -197,7 +198,7 @@ function buildAuth(env: Bindings) {
         try {
           until = await lockedUntil(db, email);
         } catch (error) {
-          console.error("Lockout check failed:", error);
+          logFailure("lockout_check", error);
           return;
         }
 
@@ -220,7 +221,7 @@ function buildAuth(env: Bindings) {
             ? registerFailedAttempt(db, email)
             : clearFailedAttempts(db, email));
         } catch (error) {
-          console.error("Lockout bookkeeping failed:", error);
+          logFailure("lockout_bookkeeping", error);
         }
       }),
     },

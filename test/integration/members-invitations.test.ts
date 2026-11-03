@@ -14,7 +14,9 @@ import {
 } from "../../src/services/invitations";
 import { leaveSpace, listMembers, removeMember, setMemberRole } from "../../src/services/members";
 import { spaceInvitations, spaceMembers, spaces, user } from "../../src/db/schema";
-import { cleanupTestUsers, createTestUser, registerTestUser, testDb, TEST_USER_PREFIX } from "./harness";
+import pg from "pg";
+import { deleteAccount, deleteAccountData } from "../../src/services/account-lifecycle";
+import { cleanupTestUsers, createTestUser, databaseUrlForEngine, registerTestUser, testDb, TEST_USER_PREFIX } from "./harness";
 
 const db = testDb();
 
@@ -394,6 +396,24 @@ describe("invitations against PostgreSQL", () => {
     await expect(coupleSpace(owner.userId)).resolves.toBeDefined();
   });
 
+  it("the expiry sweep does not delete a couple space that is still waiting for its first invitation", async () => {
+    // Crear un espacio de pareja e invitar son dos pasos. Si el cron pasa entre
+    // ambos, el espacio recién creado no tiene invitación pendiente todavía.
+    const fresh = await person("inv-sweep-fresh");
+    const freshSpace = await coupleSpace(fresh.userId);
+
+    const owner = await person("inv-sweep-owner");
+    const partner = await person("inv-sweep-partner");
+    const staleSpace = await coupleSpace(owner.userId);
+    const created = await createInvitation(db, { spaceId: staleSpace.id, invitedBy: owner.userId, email: partner.email, role: "member" });
+    await db.update(spaceInvitations).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(spaceInvitations.id, created.invitation.id));
+
+    await expireStaleInvitations(db);
+
+    expect(await db.select({ id: spaces.id }).from(spaces).where(eq(spaces.id, staleSpace.id))).toHaveLength(0);
+    expect(await db.select({ id: spaces.id }).from(spaces).where(eq(spaces.id, freshSpace.id))).toHaveLength(1);
+  });
+
   it("sweeps an expired invitation out of the pending lists and cleans up the unactivated space", async () => {
     const owner = await person("inv-expire-owner");
     const partner = await person("inv-expire-partner");
@@ -501,6 +521,105 @@ describe("member management CTEs against PostgreSQL", () => {
     ).toBe(true);
     // Con dos propietarios activos, el original ya puede salir.
     expect(await leaveSpace(db, { spaceId: space.id, userId: owner.userId })).toBe(true);
+  });
+});
+
+describe("member management under concurrency", () => {
+  async function activeOwners(spaceId: string) {
+    const rows = await db
+      .select({ id: spaceMembers.id })
+      .from(spaceMembers)
+      .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.status, "active"), eq(spaceMembers.role, "owner")));
+    return rows.length;
+  }
+
+  async function twoOwners(label: string) {
+    const setup = await spaceWithPartner(label);
+    await setMemberRole(db, { spaceId: setup.space.id, actorId: setup.owner.userId, memberId: setup.memberIdOf(setup.partner.userId), role: "owner" });
+    return setup;
+  }
+
+  it("never leaves a space without an owner when both owners leave at once", async () => {
+    for (let round = 0; round < 8; round += 1) {
+      const { owner, partner, space } = await twoOwners(`race-leave-${round}`);
+      await Promise.all([
+        leaveSpace(db, { spaceId: space.id, userId: owner.userId }),
+        leaveSpace(db, { spaceId: space.id, userId: partner.userId }),
+      ]);
+      expect(await activeOwners(space.id)).toBe(1);
+    }
+  });
+
+  it("waits for the same space lock a country change takes before deciding", async () => {
+    // `leave_incompatible_shared_spaces` (cambio de país) bloquea la fila del
+    // espacio con FOR UPDATE y elige sucesor. Si "salir" no espera ese mismo
+    // bloqueo, los dos pueden decidir sobre una foto vieja y dejar el espacio
+    // sin propietario. Se retiene el bloqueo como lo haría el trigger.
+    const { partner, space } = await twoOwners("lock-country");
+    const holder = new pg.Client({ connectionString: databaseUrlForEngine() });
+    await holder.connect();
+    try {
+      await holder.query("BEGIN");
+      await holder.query("SELECT 1 FROM spaces WHERE id = $1 FOR UPDATE", [space.id]);
+      let settled = false;
+      const leaving = leaveSpace(db, { spaceId: space.id, userId: partner.userId }).finally(() => {
+        settled = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(settled).toBe(false);
+      await holder.query("COMMIT");
+      expect(await leaving).toBe(true);
+    } finally {
+      await holder.query("ROLLBACK").catch(() => undefined);
+      await holder.end();
+    }
+  });
+
+  it("never leaves a space without an owner when both owners demote themselves at once", async () => {
+    for (let round = 0; round < 8; round += 1) {
+      const { owner, partner, space, memberIdOf } = await twoOwners(`race-demote-${round}`);
+      await Promise.all([
+        setMemberRole(db, { spaceId: space.id, actorId: owner.userId, memberId: memberIdOf(owner.userId), role: "member" }),
+        setMemberRole(db, { spaceId: space.id, actorId: partner.userId, memberId: memberIdOf(partner.userId), role: "member" }),
+      ]);
+      expect(await activeOwners(space.id)).toBe(1);
+    }
+  });
+});
+
+describe("account deletion keeps shared spaces governable", () => {
+  async function rolesOf(spaceId: string) {
+    const rows = await db
+      .select({ userId: spaceMembers.userId, role: spaceMembers.role })
+      .from(spaceMembers)
+      .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.status, "active")));
+    return rows;
+  }
+
+  it("hands ownership to the remaining partner when the only owner deletes the account", async () => {
+    const { owner, partner, space } = await spaceWithPartner("delete-owner");
+    await deleteAccount(db, owner.userId);
+    expect(await rolesOf(space.id)).toEqual([{ userId: partner.userId, role: "owner" }]);
+  });
+
+  it("hands ownership to the remaining partner when the only owner erases their data", async () => {
+    const { owner, partner, space } = await spaceWithPartner("erase-owner");
+    await deleteAccountData(db, owner.userId);
+    expect(await rolesOf(space.id)).toEqual([{ userId: partner.userId, role: "owner" }]);
+  });
+
+  it("leaves roles alone when another owner remains", async () => {
+    const { owner, partner, space, memberIdOf } = await spaceWithPartner("delete-coowner");
+    const third = await person("delete-coowner-third");
+    const created = await createInvitation(db, { spaceId: space.id, invitedBy: owner.userId, email: third.email, role: "member" });
+    await acceptInvitation(db, third.userId, created.token).catch(() => undefined);
+    await setMemberRole(db, { spaceId: space.id, actorId: owner.userId, memberId: memberIdOf(partner.userId), role: "owner" });
+
+    await deleteAccount(db, owner.userId);
+
+    const roles = await rolesOf(space.id);
+    expect(roles.find((row) => row.userId === partner.userId)?.role).toBe("owner");
+    expect(roles.filter((row) => row.role === "owner")).toHaveLength(1);
   });
 });
 

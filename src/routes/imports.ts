@@ -3,6 +3,7 @@ import { createDb } from "../db/client";
 import { errorResponse, type ErrorCode } from "../lib/http";
 import { databaseErrorResponse, isDatabaseSchemaOutdated } from "../lib/database-errors";
 import { isDataViolation } from "../lib/pg";
+import { logFailure } from "../lib/log";
 import { boundedString, parseBody } from "../lib/validation";
 import type { AuthVariables } from "../middleware/auth";
 import * as service from "../services/imports";
@@ -28,7 +29,7 @@ function fail(c: Parameters<typeof errorResponse>[0], error: unknown, context: s
   const reason = error instanceof Error ? error.message : "";
   const code = CLIENT_ERRORS[reason];
   if (!code) {
-    console.error(`${context} failed:`, reason);
+    logFailure(context, error);
     return errorResponse(c, "INTERNAL_SERVER_ERROR");
   }
   return errorResponse(c, code);
