@@ -246,6 +246,13 @@
       "when": 1788375600000,
       "tag": "0034_category_budget_history",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1788379200000,
+      "tag": "0035_venezuela_rate_history",
+      "breakpoints": true
     }
   ]
 }

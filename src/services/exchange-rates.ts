@@ -5,6 +5,7 @@ import { customExchangeRates, exchangeRateSnapshots } from "../db/schema";
 import { convertMinorAmount, fromMinorUnits, toMinorUnits } from "../lib/decimal";
 import { addDaysToDateString, isWithinVenezuelaPublishWindow, veDateString, veMidnightUtc } from "../lib/venezuela-time";
 import { VenezuelaRateService, type VenezuelaRate } from "./rates/venezuela";
+import { getCurrentUsdtRate, type CurrentUsdtRate } from "./venezuela-rate-history";
 
 type ReferenceAsset = "USD" | "EUR";
 type SnapshotRow = typeof exchangeRateSnapshots.$inferSelect;
@@ -21,7 +22,11 @@ export type NormalizedRate = {
 };
 
 export type CurrentRates = {
-  rates: { BCV: NormalizedRate; EURO: NormalizedRate };
+  /**
+   * `USDT` es `null` cuando todavía no hay dato o su lectura falló: nunca
+   * arrastra a BCV/EURO, que siguen siendo obligatorios.
+   */
+  rates: { BCV: NormalizedRate; EURO: NormalizedRate; USDT: CurrentUsdtRate | null };
   ratesUpdatedAt: string;
   stale: boolean;
 };
@@ -192,7 +197,7 @@ export async function captureNextDayRate(
   return { captured: true };
 }
 
-function toCurrentRates(byAsset: Map<ReferenceAsset, SnapshotRow>, stale: boolean): CurrentRates {
+function toCurrentRates(byAsset: Map<ReferenceAsset, SnapshotRow>, stale: boolean, usdt: CurrentUsdtRate | null): CurrentRates {
   const usd = byAsset.get("USD")!;
   const eur = byAsset.get("EUR")!;
   const ratesUpdatedAt = usd.fetchedAt > eur.fetchedAt ? usd.fetchedAt : eur.fetchedAt;
@@ -215,6 +220,7 @@ function toCurrentRates(byAsset: Map<ReferenceAsset, SnapshotRow>, stale: boolea
         observedAt: eur.observedAt.toISOString(),
         fetchedAt: eur.fetchedAt.toISOString(),
       },
+      USDT: usdt,
     },
     ratesUpdatedAt: ratesUpdatedAt.toISOString(),
     stale,
@@ -226,11 +232,22 @@ export async function getCurrentRates(
   countryCode: "VE",
   venezuelaRateService: VenezuelaRateService = new VenezuelaRateService(),
 ): Promise<CurrentRates> {
+  const usdtPromise = getCurrentUsdtRateSafely(db);
   try {
     const { byAsset, stale } = await resolveRates(db, countryCode, venezuelaRateService);
-    return toCurrentRates(byAsset, stale);
+    return toCurrentRates(byAsset, stale, await usdtPromise);
   } catch (error) {
     throw new ExchangeRatesUnavailableError("Exchange rates are unavailable", { cause: error });
+  }
+}
+
+/** El USDT es una referencia adicional: si su lectura falla se omite, no se propaga. */
+async function getCurrentUsdtRateSafely(db: Database): Promise<CurrentUsdtRate | null> {
+  try {
+    return await getCurrentUsdtRate(db);
+  } catch (error) {
+    logFailure("venezuela.current_usdt_rate", error);
+    return null;
   }
 }
 
@@ -240,6 +257,8 @@ export type PreviewResult = {
   conversions: {
     BCV: { amount: string; currency: "USD" | "VES"; rate: string };
     EURO: { amount: string; currency: "USD" | "VES"; rate: string };
+    /** Mismo criterio que CUSTOM: VES → USDT dividiendo, USD → VES multiplicando. */
+    USDT: { amount: string; currency: "USDT" | "VES"; rate: string } | null;
   };
   ratesUpdatedAt: string;
 };
@@ -261,6 +280,13 @@ export async function previewConversion(db: Database, input: PreviewInput): Prom
     conversions: {
       BCV: { amount: fromMinorUnits(bcvAmountMinor), currency: displayCurrency, rate: current.rates.BCV.rate },
       EURO: { amount: fromMinorUnits(euroAmountMinor), currency: displayCurrency, rate: current.rates.EURO.rate },
+      USDT: current.rates.USDT
+        ? {
+            amount: fromMinorUnits(convertMinorAmount(amountMinor, current.rates.USDT.rate, direction)),
+            currency: input.currency === "VES" ? "USDT" : "VES",
+            rate: current.rates.USDT.rate,
+          }
+        : null,
     },
     ratesUpdatedAt: current.ratesUpdatedAt,
   };

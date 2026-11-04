@@ -22,7 +22,7 @@ import { databaseErrorCodes, databaseErrorIdentifiers, isDatabaseSchemaOutdated 
 const DOMAIN_CODE = /^[A-Z][A-Z0-9_]{1,63}$/;
 
 /** Clases cuyo `message` siempre es una constante escrita en este repo. */
-const SAFE_MESSAGE_ERRORS = new Set(["VenezuelaRateServiceError", "ExchangeRatesUnavailableError"]);
+const SAFE_MESSAGE_ERRORS = new Set(["VenezuelaRateServiceError", "ExchangeRatesUnavailableError", "KuantoRatesError"]);
 
 type LogScalar = string | number | boolean | null | undefined;
 

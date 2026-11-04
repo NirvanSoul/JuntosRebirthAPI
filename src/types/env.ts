@@ -16,4 +16,8 @@ export type Bindings = {
   ENVIRONMENT?: "development" | "production";
   /** Fraction [0,1] of successful polling requests sent to structured logs; errors are always logged. */
   SYNC_POLLING_METRICS_SAMPLE_RATE?: string;
+  /** Supabase de Kuanto (`kuanto-mobile`), fuente de `daily_rates`. Sin ambas variables no se sincronizan tasas. */
+  KUANTO_SUPABASE_URL?: string;
+  /** Clave *publicable* (pública, solo lectura vía RLS). No es un secreto. */
+  KUANTO_SUPABASE_PUBLISHABLE_KEY?: string;
 };

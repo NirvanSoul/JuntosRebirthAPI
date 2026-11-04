@@ -2,6 +2,8 @@ export type Capabilities = {
   venezuelaCurrencyMode: boolean;
   customExchangeRate: boolean;
   multiRateMovementDisplay: boolean;
+  /** La app muestra USDT en el selector de tasas (BCV $ / EUR / USDT). */
+  usdtReferenceRate: boolean;
 };
 
 /**
@@ -17,5 +19,6 @@ export function deriveCapabilities(countryCode: string | null): Capabilities {
     venezuelaCurrencyMode,
     customExchangeRate: venezuelaCurrencyMode,
     multiRateMovementDisplay: venezuelaCurrencyMode,
+    usdtReferenceRate: venezuelaCurrencyMode,
   };
 }

@@ -10,12 +10,33 @@ import type { Bindings } from "../types/env";
 
 type Env = { Bindings: Bindings };
 type Currency = "USD" | "VES";
+type Source = "BCV" | "USDT";
 type PreviewInput = {
   amount: string;
   fromCurrency: Currency;
   toCurrency: Currency;
-  source: "BCV";
+  source: Source;
 };
+
+/**
+ * USDT no "rige" un día como el BCV: `effectiveDate` es el día (VE) en que se
+ * observó y `stale` indica si esa lectura ya es vieja.
+ */
+function pickRate(current: Awaited<ReturnType<typeof getCurrentRates>>, source: Source) {
+  if (source === "BCV") {
+    const rate = current.rates.BCV;
+    return { source: rate.source, baseCurrency: rate.baseCurrency, rate: rate.rate, effectiveDate: veDateString(new Date(rate.observedAt)), stale: current.stale };
+  }
+  const usdt = current.rates.USDT;
+  if (!usdt) return null;
+  return {
+    source: usdt.source,
+    baseCurrency: usdt.baseCurrency,
+    rate: usdt.rate,
+    effectiveDate: veDateString(new Date(usdt.observedAt ?? usdt.fetchedAt)),
+    stale: usdt.stale,
+  };
+}
 type Deps = { createDb: typeof createDb; getCurrentRates: typeof getCurrentRates };
 
 const defaults: Deps = { createDb, getCurrentRates };
@@ -29,18 +50,20 @@ export function createExchangeRatesRoute(deps: Deps = defaults) {
   const route = new Hono<Env>();
 
   route.get("/current", async (c) => {
-    if (c.req.query("source") !== "BCV") return errorResponse(c, "INVALID_REQUEST");
+    const source = c.req.query("source");
+    if (!isSource(source)) return errorResponse(c, "INVALID_REQUEST");
 
     try {
       const current = await deps.getCurrentRates(deps.createDb(c.env.DATABASE_URL), "VE");
-      const rate = current.rates.BCV;
+      const rate = pickRate(current, source);
+      if (!rate) return errorResponse(c, "VENEZUELA_RATES_UNAVAILABLE");
       return c.json({
         source: rate.source,
         baseCurrency: rate.baseCurrency,
-        quoteCurrency: rate.quoteCurrency,
+        quoteCurrency: "VES",
         rate: rate.rate,
-        effectiveDate: veDateString(new Date(rate.observedAt)),
-        stale: current.stale,
+        effectiveDate: rate.effectiveDate,
+        stale: rate.stale,
       });
     } catch (error) {
       return handleUnavailable(c, error);
@@ -53,7 +76,8 @@ export function createExchangeRatesRoute(deps: Deps = defaults) {
 
     try {
       const current = await deps.getCurrentRates(deps.createDb(c.env.DATABASE_URL), "VE");
-      const rate = current.rates.BCV;
+      const rate = pickRate(current, input.source);
+      if (!rate) return errorResponse(c, "VENEZUELA_RATES_UNAVAILABLE");
       const amountMinor = toMinorUnits(input.amount);
       const convertedMinor = convertMinorAmount(
         amountMinor,
@@ -64,8 +88,8 @@ export function createExchangeRatesRoute(deps: Deps = defaults) {
       return c.json({
         convertedAmount: fromMinorUnits(convertedMinor),
         rate: rate.rate,
-        effectiveDate: veDateString(new Date(rate.observedAt)),
-        stale: current.stale,
+        effectiveDate: rate.effectiveDate,
+        stale: rate.stale,
       });
     } catch (error) {
       return handleUnavailable(c, error);
@@ -80,7 +104,7 @@ export const exchangeRatesRoute = createExchangeRatesRoute();
 async function parsePreview(request: Request): Promise<PreviewInput | null> {
   const body = await parseBody(request, ["amount", "fromCurrency", "toCurrency", "source"]);
   if (!body || !isPositiveDecimal(body.amount)) return null;
-  if (body.source !== "BCV") return null;
+  if (!isSource(body.source)) return null;
   if (!isCurrency(body.fromCurrency) || !isCurrency(body.toCurrency) || body.fromCurrency === body.toCurrency) return null;
   return {
     amount: body.amount.trim(),
@@ -88,6 +112,10 @@ async function parsePreview(request: Request): Promise<PreviewInput | null> {
     toCurrency: body.toCurrency,
     source: body.source,
   };
+}
+
+function isSource(value: unknown): value is Source {
+  return value === "BCV" || value === "USDT";
 }
 
 function isCurrency(value: unknown): value is Currency {

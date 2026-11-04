@@ -14,3 +14,15 @@ export function parseIsoDate(value: unknown): string | null {
     ? value
     : null;
 }
+
+const clockTimePattern = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+/** Hora de reloj "HH:mm" (24 h, sin segundos ni zona). */
+export function parseClockTime(value: unknown): string | null {
+  return typeof value === "string" && clockTimePattern.test(value) ? value : null;
+}
+
+/** Días entre dos fechas "YYYY-MM-DD" ya validadas (`to - from`). */
+export function daysBetween(from: string, to: string): number {
+  return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
+}

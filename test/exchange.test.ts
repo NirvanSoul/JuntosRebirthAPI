@@ -71,4 +71,77 @@ describe("Exchange routes", () => {
     expect(deps.previewConversion).toHaveBeenCalledWith(expect.anything(), { amount: "10000", currency: "VES" });
     await expect(response.json()).resolves.toEqual({ data: preview });
   });
+
+  describe("GET /v1/exchange/rates/at", () => {
+    const ratesAt = { date: "2026-08-15", time: "14:30", bcv: { effectiveDate: "2026-08-14", usd: "150.0000000000", eur: "170.0000000000" }, usdt: { rate: "210.0000000000", precision: "daily_average", observedAt: null } };
+
+    it("returns the rates for a date and optional time", async () => {
+      const getRatesAt = vi.fn().mockResolvedValue(ratesAt);
+      const { testApp } = setup({ getRatesAt });
+      const response = await testApp.request("/v1/exchange/rates/at?date=2026-08-15&time=14:30", {}, bindings);
+
+      expect(response.status).toBe(200);
+      expect(getRatesAt).toHaveBeenCalledWith(expect.anything(), "2026-08-15", "14:30");
+      await expect(response.json()).resolves.toEqual({ data: ratesAt });
+    });
+
+    it("treats a missing time as null", async () => {
+      const getRatesAt = vi.fn().mockResolvedValue(ratesAt);
+      const { testApp } = setup({ getRatesAt });
+      await testApp.request("/v1/exchange/rates/at?date=2026-08-15", {}, bindings);
+      expect(getRatesAt).toHaveBeenCalledWith(expect.anything(), "2026-08-15", null);
+    });
+
+    it.each([
+      ["no date", ""],
+      ["an impossible date", "?date=2026-02-30"],
+      ["a malformed time", "?date=2026-08-15&time=2:30"],
+      ["seconds in the time", "?date=2026-08-15&time=14:30:00"],
+      ["an empty time", "?date=2026-08-15&time="],
+      ["a date after tomorrow", "?date=2999-01-01"],
+    ])("rejects %s", async (_label, query) => {
+      const getRatesAt = vi.fn();
+      const { testApp } = setup({ getRatesAt });
+      const response = await testApp.request(`/v1/exchange/rates/at${query}`, {}, bindings);
+      expect(response.status).toBe(400);
+      expect(getRatesAt).not.toHaveBeenCalled();
+    });
+
+    it("maps a database failure to VENEZUELA_RATES_UNAVAILABLE", async () => {
+      const { testApp } = setup({ getRatesAt: vi.fn().mockRejectedValue(new Error("db down")) });
+      const response = await testApp.request("/v1/exchange/rates/at?date=2026-08-15", {}, bindings);
+      expect(response.status).toBe(502);
+    });
+  });
+
+  describe("GET /v1/exchange/rates/history", () => {
+    it("returns one row per day in the range", async () => {
+      const rows = [{ date: "2026-08-15", bcvUsd: "150.0000000000", bcvEur: "170.0000000000", usdtDailyAverage: "210.0000000000" }];
+      const getRateHistory = vi.fn().mockResolvedValue(rows);
+      const { testApp } = setup({ getRateHistory });
+      const response = await testApp.request("/v1/exchange/rates/history?from=2026-08-01&to=2026-08-31", {}, bindings);
+
+      expect(response.status).toBe(200);
+      expect(getRateHistory).toHaveBeenCalledWith(expect.anything(), "2026-08-01", "2026-08-31");
+      await expect(response.json()).resolves.toEqual({ data: { from: "2026-08-01", to: "2026-08-31", rates: rows } });
+    });
+
+    it("accepts exactly 366 days", async () => {
+      const { testApp } = setup({ getRateHistory: vi.fn().mockResolvedValue([]) });
+      const response = await testApp.request("/v1/exchange/rates/history?from=2025-01-01&to=2026-01-01", {}, bindings);
+      expect(response.status).toBe(200);
+    });
+
+    it.each([
+      ["a missing bound", "?from=2026-08-01"],
+      ["an inverted range", "?from=2026-08-31&to=2026-08-01"],
+      ["a range longer than 366 days", "?from=2025-01-01&to=2026-01-02"],
+    ])("rejects %s", async (_label, query) => {
+      const getRateHistory = vi.fn();
+      const { testApp } = setup({ getRateHistory });
+      const response = await testApp.request(`/v1/exchange/rates/history${query}`, {}, bindings);
+      expect(response.status).toBe(400);
+      expect(getRateHistory).not.toHaveBeenCalled();
+    });
+  });
 });

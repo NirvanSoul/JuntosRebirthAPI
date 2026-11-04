@@ -23,7 +23,11 @@
     "BETTER_AUTH_URL": "https://api.aoraestudio.com",
     "RESEND_FROM": "Juntoss <no-reply@aoraestudio.com>",
     "APP_URL": "juntoss://",
-    "ENVIRONMENT": "production"
+    "ENVIRONMENT": "production",
+    // Supabase de Kuanto: fuente de `daily_rates` (BCV + USDT). La clave es la
+    // *publicable* del proyecto: pública por diseño y solo de lectura (RLS).
+    "KUANTO_SUPABASE_URL": "https://ghyznbisjcdmtuaelhmg.supabase.co",
+    "KUANTO_SUPABASE_PUBLISHABLE_KEY": "sb_publishable_cEBA0AOt9yrhP0-5Sp5bHw_AzkMQlFj"
   },
   "r2_buckets": [
     { "binding": "AVATARS", "bucket_name": "juntoss-avatars" }
@@ -31,5 +35,7 @@
   "observability": {
     "enabled": true
   },
-  "triggers": { "crons": ["0 * * * *"] }
+  // "0 * * * *": tareas horarias. "10,40 * * * *": copia de tasas desde
+  // Kuanto (actualiza a los :05). Ver src/services/venezuela-rate-sync-job.ts.
+  "triggers": { "crons": ["0 * * * *", "10,40 * * * *"] }
 }

@@ -22,6 +22,7 @@ import { runRecurrences } from "./services/recurrence-engine";
 import { createDb } from "./db/client";
 import { expireStaleInvitations } from "./services/invitations";
 import { captureNextDayRate } from "./services/exchange-rates";
+import { HOURLY_CRON, RATES_CRON, runVenezuelaRateSync } from "./services/venezuela-rate-sync-job";
 import { accountRoute } from "./routes/account";
 import { createInvitationAcceptanceRoute, createInvitationPreviewRoute, createInvitationsRoute } from "./routes/invitations";
 import { createMembersRoute } from "./routes/members";
@@ -113,24 +114,34 @@ app.all("/api/auth/*", async (c) => {
   return normalizeAuthErrorResponse(c, await auth.handler(c.req.raw));
 });
 
+async function runHourlyTasks(env: Bindings) {
+  const [recurrences, expiredInvitations, venezuelaNextDayRate] = await Promise.all([
+    runRecurrences(env.DATABASE_URL),
+    expireStaleInvitations(createDb(env.DATABASE_URL)),
+    // Corre cada hora pero solo actúa dentro de la ventana de
+    // publicación del BCV (~3:00pm–8:30pm VE); fuera de ella es un
+    // no-op inmediato. Nunca debe tumbar el resto del cron.
+    captureNextDayRate(createDb(env.DATABASE_URL), "VE").catch((error: unknown) => {
+      logFailure("cron.capture_next_day_rate", error);
+      return { captured: false };
+    }),
+  ]);
+  // `invalidSeries` y `truncatedSeries` son la señal de que algo dejó de
+  // generarse: sin ellas una serie rota se reintentaba en silencio.
+  return { ...recurrences, expiredInvitations, venezuelaNextDayRate };
+}
+
 const worker = Object.assign(app, {
-  scheduled(_event: ScheduledEvent, env: Bindings, ctx: ExecutionContext) {
+  scheduled(event: ScheduledEvent, env: Bindings, ctx: ExecutionContext) {
     ctx.waitUntil(
       (async () => {
-        const [recurrences, expiredInvitations, venezuelaNextDayRate] = await Promise.all([
-          runRecurrences(env.DATABASE_URL),
-          expireStaleInvitations(createDb(env.DATABASE_URL)),
-          // Corre cada hora pero solo actúa dentro de la ventana de
-          // publicación del BCV (~3:00pm–8:30pm VE); fuera de ella es un
-          // no-op inmediato. Nunca debe tumbar el resto del cron.
-          captureNextDayRate(createDb(env.DATABASE_URL), "VE").catch((error: unknown) => {
-            logFailure("cron.capture_next_day_rate", error);
-            return { captured: false };
-          }),
+        // Un disparo desconocido (p. ej. `wrangler dev --test-scheduled`) corre todo.
+        const known = event.cron === HOURLY_CRON || event.cron === RATES_CRON;
+        const [hourly, venezuelaRateSync] = await Promise.all([
+          event.cron === HOURLY_CRON || !known ? runHourlyTasks(env) : Promise.resolve(null),
+          event.cron === RATES_CRON || !known ? runVenezuelaRateSync(env) : Promise.resolve(null),
         ]);
-        // `invalidSeries` y `truncatedSeries` son la señal de que algo dejó de
-        // generarse: sin ellas una serie rota se reintentaba en silencio.
-        console.log(JSON.stringify({ ...recurrences, expiredInvitations, venezuelaNextDayRate }));
+        console.log(JSON.stringify({ cron: event.cron, ...hourly, venezuelaRateSync }));
       })(),
     );
   },

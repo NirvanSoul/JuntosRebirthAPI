@@ -49,7 +49,7 @@ describe("Account routes", () => {
     const response = await testApp.request("/v1/me/capabilities", {}, bindings);
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
-      data: { countryCode: null, features: { venezuelaCurrencyMode: false, customExchangeRate: false, multiRateMovementDisplay: false } },
+      data: { countryCode: null, features: { venezuelaCurrencyMode: false, customExchangeRate: false, multiRateMovementDisplay: false, usdtReferenceRate: false } },
     });
   });
 
@@ -66,7 +66,7 @@ describe("Account routes", () => {
 
     const response = await testApp.request("/v1/me/capabilities", {}, bindings);
     await expect(response.json()).resolves.toEqual({
-      data: { countryCode: "VE", features: { venezuelaCurrencyMode: true, customExchangeRate: true, multiRateMovementDisplay: true } },
+      data: { countryCode: "VE", features: { venezuelaCurrencyMode: true, customExchangeRate: true, multiRateMovementDisplay: true, usdtReferenceRate: true } },
     });
   });
 

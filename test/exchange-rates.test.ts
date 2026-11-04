@@ -92,4 +92,42 @@ describe("Fase 2 exchange-rates routes", () => {
     expect(response.status).toBe(502);
     await expect(response.json()).resolves.toMatchObject({ error: { code: "VENEZUELA_RATES_UNAVAILABLE" } });
   });
+
+  describe("USDT source", () => {
+    const usdt = { source: "USDT" as const, baseCurrency: "USDT" as const, quoteCurrency: "VES" as const, rate: "100.0000000000", dailyAverage: "99.0000000000", observedAt: "2026-09-01T18:05:00.000Z", fetchedAt: "2026-09-01T18:30:00.000Z", stale: false };
+    const withUsdt = { ...currentRates, rates: { ...currentRates.rates, USDT: usdt } };
+
+    it("GET /current?source=USDT returns the latest P2P rate", async () => {
+      const { testApp } = setup({ getCurrentRates: vi.fn().mockResolvedValue(withUsdt) });
+      const response = await testApp.request("/v1/exchange-rates/current?source=USDT", {}, bindings);
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({
+        source: "USDT", baseCurrency: "USDT", quoteCurrency: "VES", rate: "100.0000000000", effectiveDate: "2026-09-01", stale: false,
+      });
+    });
+
+    it("reports USDT staleness independently from BCV", async () => {
+      const { testApp } = setup({ getCurrentRates: vi.fn().mockResolvedValue({ ...withUsdt, rates: { ...withUsdt.rates, USDT: { ...usdt, stale: true } } }) });
+      const response = await testApp.request("/v1/exchange-rates/current?source=USDT", {}, bindings);
+      await expect(response.json()).resolves.toMatchObject({ stale: true });
+    });
+
+    it("POST /preview converts VES using USDT", async () => {
+      const { testApp } = setup({ getCurrentRates: vi.fn().mockResolvedValue(withUsdt) });
+      const response = await testApp.request("/v1/exchange-rates/preview", {
+        method: "POST",
+        body: JSON.stringify({ amount: "10000", fromCurrency: "VES", toCurrency: "USD", source: "USDT" }),
+      }, bindings);
+      await expect(response.json()).resolves.toMatchObject({ convertedAmount: "100.00", rate: "100.0000000000" });
+    });
+
+    it("returns 502 when there is no USDT rate yet, without touching BCV", async () => {
+      const { testApp } = setup({ getCurrentRates: vi.fn().mockResolvedValue({ ...currentRates, rates: { ...currentRates.rates, USDT: null } }) });
+      const usdtResponse = await testApp.request("/v1/exchange-rates/current?source=USDT", {}, bindings);
+      const bcvResponse = await testApp.request("/v1/exchange-rates/current?source=BCV", {}, bindings);
+      expect(usdtResponse.status).toBe(502);
+      expect(bcvResponse.status).toBe(200);
+    });
+  });
 });

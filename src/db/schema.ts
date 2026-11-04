@@ -1005,6 +1005,65 @@ export const transactionReferenceRates = pgTable(
   ],
 );
 
+/**
+ * Espejo de `daily_rates` del Supabase de Kuanto (`kuanto-mobile`): una fila
+ * por día calendario de Venezuela. Lo llena el cron
+ * (`syncVenezuelaRateHistory`); los usuarios leen siempre de aquí, nunca de
+ * Supabase.
+ *
+ * Las columnas BCV quedan nulas en fines de semana y feriados (el BCV no
+ * publica): quien busque la tasa de un día así debe tomar la última anterior.
+ * `usdt_last` es el último valor P2P observado ese día (Kuanto lo sobrescribe
+ * durante el día) y `usdt_daily_average` el promedio de todo el día.
+ */
+export const venezuelaDailyRates = pgTable(
+  "venezuela_daily_rates",
+  {
+    rateDate: date("rate_date").primaryKey(),
+    bcvUsd: numeric("bcv_usd", { precision: 24, scale: 10 }),
+    bcvEur: numeric("bcv_eur", { precision: 24, scale: 10 }),
+    usdtLast: numeric("usdt_last", { precision: 24, scale: 10 }),
+    usdtDailyAverage: numeric("usdt_daily_average", { precision: 24, scale: 10 }),
+    usdtSources: jsonb("usdt_sources"),
+    bcvPublishedAt: timestamp("bcv_published_at", { withTimezone: true }),
+    usdtObservedAt: timestamp("usdt_observed_at", { withTimezone: true }),
+    // `updated_at` de la fila en Supabase: es el cursor de la sincronización
+    // incremental y evita que una lectura vieja pise una más nueva.
+    sourceUpdatedAt: timestamp("source_updated_at", { withTimezone: true }).notNull(),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    check("venezuela_daily_rates_bcv_usd_positive", sql`${table.bcvUsd} IS NULL OR ${table.bcvUsd} > 0`),
+    check("venezuela_daily_rates_bcv_eur_positive", sql`${table.bcvEur} IS NULL OR ${table.bcvEur} > 0`),
+    check("venezuela_daily_rates_usdt_last_positive", sql`${table.usdtLast} IS NULL OR ${table.usdtLast} > 0`),
+    check(
+      "venezuela_daily_rates_usdt_daily_average_positive",
+      sql`${table.usdtDailyAverage} IS NULL OR ${table.usdtDailyAverage} > 0`,
+    ),
+    index("venezuela_daily_rates_source_updated_idx").on(table.sourceUpdatedAt),
+  ],
+);
+
+/**
+ * Lecturas USDT intradía. Supabase solo conserva el último valor de cada día,
+ * así que el historial por hora existe únicamente desde que este cron empezó
+ * a guardar cada lectura nueva (una fila por `observed_at` distinto).
+ */
+export const venezuelaUsdtReadings = pgTable(
+  "venezuela_usdt_readings",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    observedAt: timestamp("observed_at", { withTimezone: true }).notNull(),
+    rate: numeric("rate", { precision: 24, scale: 10 }).notNull(),
+    sources: jsonb("sources"),
+    fetchedAt: timestamp("fetched_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    check("venezuela_usdt_readings_rate_positive", sql`${table.rate} > 0`),
+    uniqueIndex("venezuela_usdt_readings_observed_at_idx").on(table.observedAt),
+  ],
+);
+
 // Relations
 export const userRelations = relations(user, ({ one, many }) => ({
   sessions: many(session),
