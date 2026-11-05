@@ -331,6 +331,20 @@ Respuesta (`data`), compatible con clientes anteriores (solo añade campos):
   como sincronizada, el servidor toca `server_updated_at` de la versión
   canónica al descartar una vieja: vuelve a llegar por `/v1/sync/changes`.
 
+### Hora del movimiento (`occurredTime`)
+
+Cada transacción del sync admite `occurredTime`: hora de reloj local `HH:mm`
+(24 h, sin zona) o `null`, como `occurredOn` es una fecha local (migración
+`0036_transaction_occurred_time`). Es informativa: no cambia orden, agrupación
+ni tasas congeladas.
+
+- Clave **ausente** (app anterior, o su reintento sin la clave) conserva la hora
+  guardada; `null` la quita; una creación sin la clave queda en `null`.
+- Un valor mal formado responde `400 INVALID_SYNC_PAYLOAD` con
+  `reason: "INVALID_TIME_OF_DAY"`, no `FIELD_NOT_ALLOWED`: la app usa este
+  último para dejar de enviar la clave a una API que no la conoce.
+- Snapshot y `/v1/sync/changes` la devuelven siempre (`null` si no hay).
+
 ### Presupuestos de categoría
 
 `categories[].budgets[]` admite `currency`, `budgetAmountMinor` y, desde las

@@ -761,6 +761,8 @@ export const transactions = pgTable(
     currency: varchar("currency", { length: 3 }).notNull(),
     title: text("title").notNull(),
     occurredOn: date("occurred_on").notNull(),
+    // Hora de reloj local `HH:mm` (sin zona), como `occurredOn`. Informativa.
+    occurredTime: varchar("occurred_time", { length: 5 }),
     note: text("note"),
     // El SQLite local modela las recurrencias personalizadas como N movimientos
     // que comparten `recurrence_group_id`, sin serie. Sin estas dos columnas la
@@ -790,6 +792,10 @@ export const transactions = pgTable(
   },
   (table) => [
     check("transactions_amount_minor_positive", sql`${table.amountMinor} > 0`),
+    check(
+      "transactions_occurred_time_format",
+      sql`${table.occurredTime} IS NULL OR ${table.occurredTime} ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'`,
+    ),
     index("transactions_space_occurred_on_idx").on(table.spaceId, table.occurredOn),
     index("transactions_space_server_updated_idx").on(table.spaceId, table.serverUpdatedAt),
     index("transactions_category_occurred_on_idx").on(

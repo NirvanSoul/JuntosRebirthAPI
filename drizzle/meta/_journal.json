@@ -253,6 +253,13 @@
       "when": 1788379200000,
       "tag": "0035_venezuela_rate_history",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1788382800000,
+      "tag": "0036_transaction_occurred_time",
+      "breakpoints": true
     }
   ]
 }

@@ -863,6 +863,11 @@ async function syncOnce(
       ? sql``
       : sql` AND ${transactions.amountMinor} = excluded.amount_minor AND ${transactions.currency} = excluded.currency AND ${transactions.occurredOn} = excluded.occurred_on`;
     const current = versionIsCurrent(transactions, id, spaceId, updatedAt);
+    // Ausente ≠ `null`: sin la clave (app anterior, o su reintento sin ella)
+    // se conserva la hora guardada; `null` la quita. No vuelve a congelar
+    // tasas: es informativa.
+    const hasOccurredTime = Object.prototype.hasOwnProperty.call(row, "occurredTime");
+    const occurredTime = hasOccurredTime ? (row.occurredTime as string | null) : null;
 
     upsertParent(
       "transactions",
@@ -883,6 +888,7 @@ async function syncOnce(
           currency,
           title: text(row.title),
           occurredOn,
+          occurredTime,
           note: stringOrNull(row.note),
           recurrence: recurrenceKind(row.recurrence),
           recurrenceGroupId: stringOrNull(row.recurrenceGroupId),
@@ -905,6 +911,7 @@ async function syncOnce(
             currency: sql`excluded.currency`,
             title: sql`excluded.title`,
             occurredOn: sql`excluded.occurred_on`,
+            ...(hasOccurredTime ? { occurredTime: sql`excluded.occurred_time` } : {}),
             note: sql`excluded.note`,
             recurrence: sql`excluded.recurrence`,
             recurrenceGroupId: sql`excluded.recurrence_group_id`,
@@ -1277,7 +1284,7 @@ function validateSyncedTransaction(row: Row, index: number) {
     "id", "remoteId", "categoryId", "moneyAccountId", "createdBy", "type",
     "amountMinor", "currency", "title", "occurredOn", "note", "recurrence",
     "recurrenceGroupId", "recurrenceSeriesId", "sourceTransactionId", "isArchived",
-    "createdAt", "updatedAt", "customRateId",
+    "createdAt", "updatedAt", "customRateId", "occurredTime",
   ]);
   const unexpected = Object.keys(row).find((field) => !allowedFields.has(field));
   if (unexpected) throw syncIssue("INVALID_SYNC_PAYLOAD", ["transactions", index, unexpected], "FIELD_NOT_ALLOWED", row, "transaction");
@@ -1290,6 +1297,11 @@ function validateSyncedTransaction(row: Row, index: number) {
   currencyCode(row.currency, ["transactions", index, "currency"], row, "transaction");
   requiredText(row.title, ["transactions", index, "title"], row, "transaction");
   requiredDateOnly(row.occurredOn, ["transactions", index, "occurredOn"], row, "transaction");
+  // Opcional: una app anterior no la envía. Mal formada no es "campo
+  // desconocido" (`FIELD_NOT_ALLOWED`), que la app usa para dejar de enviarla.
+  if (Object.prototype.hasOwnProperty.call(row, "occurredTime") && row.occurredTime !== null && !isTimeOfDay(row.occurredTime)) {
+    throw syncIssue("INVALID_SYNC_PAYLOAD", ["transactions", index, "occurredTime"], "INVALID_TIME_OF_DAY", row, "transaction");
+  }
   requiredBoolean(row.isArchived, ["transactions", index, "isArchived"], row, "transaction");
   requiredTimestamp(row.createdAt, ["transactions", index, "createdAt"], row, "transaction");
   requiredTimestamp(row.updatedAt, ["transactions", index, "updatedAt"], row, "transaction");
@@ -1470,6 +1482,13 @@ function nullableReference(map: Map<string, string>, value: unknown): string | n
   const localId = text(value);
   if (!localId) return undefined;
   return map.get(localId);
+}
+
+const TIME_OF_DAY = /^([01][0-9]|2[0-3]):[0-5][0-9]$/;
+
+/** Hora de reloj local `HH:mm` (24 h, sin segundos ni zona). */
+function isTimeOfDay(value: unknown): value is string {
+  return typeof value === "string" && TIME_OF_DAY.test(value);
 }
 
 function text(value: unknown) {
