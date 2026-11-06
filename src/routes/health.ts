@@ -68,6 +68,15 @@ healthRoute.get("/health/db", async (c) => {
           WHERE table_schema = 'public'
             AND table_name = 'category_budgets'
             AND column_name = 'history'
+        )
+        -- Migración 0036: hora del movimiento. Sin ella cada sync con
+        -- movimientos falla (el upsert escribe la columna).
+        AND EXISTS (
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'transactions'
+            AND column_name = 'occurred_time'
         ) AS schema_current
     `);
     const rows = Array.isArray(result) ? result : result.rows;
